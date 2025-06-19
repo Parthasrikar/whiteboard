@@ -10,7 +10,7 @@ const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
   origin: [
-    "http://localhost:3000",
+    "https://whiteboard-frontend-2e8f.onrender.com",
     "https://your-production-domain.com",
     "http://localhost:5173/"
   ],
@@ -268,5 +268,5 @@ process.on('uncaughtException', (error) => {
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`🚀 Whiteboard server running on port ${PORT}`);
-  console.log(`📊 Health check available at http://localhost:${PORT}/health`);
+  console.log(`📊 Health check available at https://whiteboard-backend-vwnp.onrender.com:${PORT}/health`);
 });
