@@ -1,11 +1,11 @@
-// Updated WhiteboardApp.jsx with proper user data handling
+// Updated WhiteboardApp.jsx with VoiceChat integrated into Toolbar
 import React, { useState, useEffect, useCallback } from 'react';
 import HomePage from './HomePage';
 import Header from './Header';
 import Toolbar from './Toolbar';
 import Canvas from './Canvas';
-import VoiceChat from './VoiceChat';
-// import VoiceChatDiagnostic from "./VoiceChatDiagnostic"
+// Remove separate VoiceChat import since it's now in Toolbar
+// import VoiceChat from './VoiceChat';
 import { useSocket } from '../hooks/useSocket';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { createSocketEventHandler, generateRoomCode, validateRoomCode, formatUserName } from '../utils/socketEvents';
@@ -404,38 +404,32 @@ const WhiteboardApp = () => {
         handleLeaveRoom={handleLeaveRoom}
       />
       
-      <div className="flex-1 flex ">
-        <div className="flex flex-col">
-          <Toolbar
-            tool={tool}
-            setTool={setTool}
-            color={color}
-            setColor={setColor}
-            brushSize={brushSize}
-            setBrushSize={setBrushSize}
-            elements={elements}
-            undoLastAction={undoLastAction}
-            clearCanvas={clearCanvas}
-            downloadCanvas={downloadCanvas}
-            connectedUsers={connectedUsers}
-          />
-          
-          {/* Voice Chat Component */}
-          <VoiceChat
-            isVoiceChatActive={isVoiceChatActive}
-            isMuted={isMuted}
-            connectedPeers={connectedPeers}
-            audioPermission={audioPermission}
-            voiceError={voiceError}
-            startVoiceChat={startVoiceChat}
-            stopVoiceChat={stopVoiceChat}
-            toggleMute={toggleMute}
-            connectedUsers={connectedUsers}
-          />
-
-          {/* <VoiceChatDiagnostic></VoiceChatDiagnostic> */}
-        </div>
+      <div className="flex-1 flex overflow-hidden">
+        {/* Enhanced Toolbar with integrated VoiceChat */}
+        <Toolbar
+          tool={tool}
+          setTool={setTool}
+          color={color}
+          setColor={setColor}
+          brushSize={brushSize}
+          setBrushSize={setBrushSize}
+          elements={elements}
+          undoLastAction={undoLastAction}
+          clearCanvas={clearCanvas}
+          downloadCanvas={downloadCanvas}
+          connectedUsers={connectedUsers}
+          // Voice chat props passed to toolbar
+          isVoiceChatActive={isVoiceChatActive}
+          isMuted={isMuted}
+          connectedPeers={connectedPeers}
+          audioPermission={audioPermission}
+          voiceError={voiceError}
+          startVoiceChat={startVoiceChat}
+          stopVoiceChat={stopVoiceChat}
+          toggleMute={toggleMute}
+        />
         
+        {/* Canvas takes the remaining space */}
         <Canvas
           elements={elements}
           currentPath={currentPath}
@@ -451,6 +445,7 @@ const WhiteboardApp = () => {
         />
       </div>
       
+      {/* Connection status indicator */}
       {connectionStatus !== 'connected' && (
         <div className={`fixed bottom-4 right-4 px-4 py-2 rounded-lg ${
           connectionStatus === 'error' 

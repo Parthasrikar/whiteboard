@@ -10,6 +10,7 @@ import {
   Download,
   Users 
 } from 'lucide-react';
+import VoiceChat from './VoiceChat';
 
 const Toolbar = ({
   tool,
@@ -22,7 +23,16 @@ const Toolbar = ({
   undoLastAction,
   clearCanvas,
   downloadCanvas,
-  connectedUsers
+  connectedUsers,
+  // Voice chat props
+  isVoiceChatActive,
+  isMuted,
+  connectedPeers,
+  audioPermission,
+  voiceError,
+  startVoiceChat,
+  stopVoiceChat,
+  toggleMute
 }) => {
   const colorPresets = [
     "#000000", "#FF0000", "#00FF00", "#0000FF", 
@@ -54,7 +64,7 @@ const Toolbar = ({
   };
 
   return (
-    <div className="bg-white border-r min-w-[240px] h-full flex flex-col">
+    <div className="bg-white border-r min-w-[280px] max-w-[320px] h-full flex flex-col">
       <div className="p-4 flex-1 overflow-y-auto">
         <div className="space-y-4">
           {/* Drawing Tools */}
@@ -196,6 +206,21 @@ const Toolbar = ({
               <Download className="w-4 h-4" />
               <span className="text-sm font-medium">Download</span>
             </button>
+          </div>
+
+          {/* Voice Chat Section - Integrated */}
+          <div className="pt-4 border-t">
+            <VoiceChat
+              isVoiceChatActive={isVoiceChatActive}
+              isMuted={isMuted}
+              connectedPeers={connectedPeers}
+              audioPermission={audioPermission}
+              voiceError={voiceError}
+              startVoiceChat={startVoiceChat}
+              stopVoiceChat={stopVoiceChat}
+              toggleMute={toggleMute}
+              connectedUsers={connectedUsers}
+            />
           </div>
 
           {/* Connected Users */}
