@@ -5,7 +5,7 @@ import Header from './Header';
 import Toolbar from './Toolbar';
 import Canvas from './Canvas';
 import VoiceChat from './VoiceChat';
-import VoiceChatDiagnostic from "./VoiceChatDiagnostic"
+// import VoiceChatDiagnostic from "./VoiceChatDiagnostic"
 import { useSocket } from '../hooks/useSocket';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { createSocketEventHandler, generateRoomCode, validateRoomCode, formatUserName } from '../utils/socketEvents';
@@ -433,7 +433,7 @@ const WhiteboardApp = () => {
             connectedUsers={connectedUsers}
           />
 
-          <VoiceChatDiagnostic></VoiceChatDiagnostic>
+          {/* <VoiceChatDiagnostic></VoiceChatDiagnostic> */}
         </div>
         
         <Canvas

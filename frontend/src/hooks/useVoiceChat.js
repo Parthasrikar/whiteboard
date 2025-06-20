@@ -439,24 +439,31 @@ export const useVoiceChat = (socket, roomCode, userName) => {
     };
 
     const handleVoiceAnswer = async (data) => {
-      const { fromUserId, answer } = data;
-      console.log(`📥 Received voice answer from: ${fromUserId}`);
-      
-      const peerConnection = peerConnectionsRef.current.get(fromUserId);
-      
-      if (peerConnection) {
-        try {
-          await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-          console.log(`✅ Set remote description for: ${fromUserId}`);
-          updatePeerStatus(fromUserId, { answering: false });
-        } catch (error) {
-          console.error('❌ Error handling voice answer:', error);
-          setVoiceError('Failed to handle voice answer: ' + error.message);
-        }
-      } else {
-        console.warn(`⚠️ No peer connection found for answer from: ${fromUserId}`);
+  const { fromUserId, answer } = data;
+  console.log(`📥 Received voice answer from: ${fromUserId}`);
+
+  const peerConnection = peerConnectionsRef.current.get(fromUserId);
+
+  if (peerConnection) {
+    try {
+      if (peerConnection.signalingState !== 'have-local-offer') {
+        console.warn(
+          `⚠️ Cannot apply answer: peerConnection with ${fromUserId} is in '${peerConnection.signalingState}' state`
+        );
+        return;
       }
-    };
+
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+      console.log(`✅ Set remote description for: ${fromUserId}`);
+      updatePeerStatus(fromUserId, { answering: false });
+    } catch (error) {
+      console.error('❌ Error handling voice answer:', error);
+      setVoiceError('Failed to handle voice answer: ' + error.message);
+    }
+  } else {
+    console.warn(`⚠️ No peer connection found for answer from: ${fromUserId}`);
+  }
+};
 
     const handleVoiceIceCandidate = async (data) => {
       const { fromUserId, candidate } = data;
