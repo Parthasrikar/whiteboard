@@ -228,88 +228,117 @@ io.on('connection', (socket) => {
 
   // Voice chat signaling events
   socket.on('voice-offer', (data) => {
-    if (!socket.currentRoom) return;
-    
-    const { targetUserId, offer } = data;
-    
-    // Send offer to specific user
-    socket.to(targetUserId).emit('voice-offer', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName,
-      offer
-    });
-    
-    console.log(`Voice offer from ${socket.id} to ${targetUserId}`);
+  if (!socket.currentRoom) return;
+  
+  const { targetUserId, offer } = data;
+  
+  // Send offer to specific user
+  socket.to(targetUserId).emit('voice-offer', {
+    fromUserId: socket.id,
+    fromUserName: socket.userName,
+    offer
   });
+  
+  console.log(`Voice offer from ${socket.id} to ${targetUserId}`);
+});
 
   socket.on('voice-answer', (data) => {
-    if (!socket.currentRoom) return;
-    
-    const { targetUserId, answer } = data;
-    
-    // Send answer to specific user
-    socket.to(targetUserId).emit('voice-answer', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName,
-      answer
-    });
-    
-    console.log(`Voice answer from ${socket.id} to ${targetUserId}`);
+  if (!socket.currentRoom) return;
+  
+  const { targetUserId, answer } = data;
+  
+  // Send answer to specific user
+  socket.to(targetUserId).emit('voice-answer', {
+    fromUserId: socket.id,
+    fromUserName: socket.userName,
+    answer
   });
+  
+  console.log(`Voice answer from ${socket.id} to ${targetUserId}`);
+});
 
   socket.on('voice-ice-candidate', (data) => {
-    if (!socket.currentRoom) return;
-    
-    const { targetUserId, candidate } = data;
-    
-    // Send ICE candidate to specific user
-    socket.to(targetUserId).emit('voice-ice-candidate', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName,
-      candidate
-    });
+  if (!socket.currentRoom) return;
+  
+  const { targetUserId, candidate } = data;
+  
+  // Send ICE candidate to specific user
+  socket.to(targetUserId).emit('voice-ice-candidate', {
+    fromUserId: socket.id,
+    fromUserName: socket.userName,
+    candidate
   });
+});
 
   socket.on('voice-toggle', (data) => {
-    if (!socket.currentRoom) return;
-    
-    const { isMuted } = data;
-    
-    // Update user's voice status in room
-    const result = roomManager.updateUserVoiceStatus(socket.currentRoom, socket.id, { isMuted });
-    
-    if (result.success) {
-      // Notify all users in room about voice status change
-      socket.to(socket.currentRoom).emit('user-voice-status', {
-        userId: socket.id,
-        userName: socket.userName,
-        isMuted
-      });
-    }
-  });
-
-  socket.on('request-voice-chat', (data) => {
-    if (!socket.currentRoom) return;
-    
-    // Notify all users in room that someone wants to start voice chat
-    socket.to(socket.currentRoom).emit('voice-chat-requested', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName
+  if (!socket.currentRoom) return;
+  
+  const { isMuted } = data;
+  
+  // Update user's voice status in room
+  const result = roomManager.updateUserVoiceStatus(socket.currentRoom, socket.id, { isMuted });
+  
+  if (result.success) {
+    // Notify all users in room about voice status change
+    socket.to(socket.currentRoom).emit('user-voice-status', {
+      userId: socket.id,
+      userName: socket.userName,
+      isMuted
     });
+  }
+});
+
+  // FIXED: Better voice chat request handling
+socket.on('request-voice-chat', (data) => {
+  if (!socket.currentRoom) return;
+  
+  console.log(`Voice chat requested by ${socket.userName} in room ${socket.currentRoom}`);
+  
+  // Get all users in the room
+  const roomUsers = roomManager.getRoomUsers(socket.currentRoom);
+  const otherUserIds = roomUsers
+    .filter(user => user.id !== socket.id)
+    .map(user => user.id);
+  
+  console.log(`Other users in room:`, otherUserIds);
+  
+  if (otherUserIds.length === 0) {
+    socket.emit('voice-error', { error: 'No other users in room' });
+    return;
+  }
+  
+  // Notify all other users that voice chat is being requested
+  socket.to(socket.currentRoom).emit('voice-chat-requested', {
+    fromUserId: socket.id,
+    fromUserName: socket.userName
   });
+  
+  // For simplicity, auto-accept and start voice chat immediately
+  // Send the user list back to the requester to initiate peer connections
+  socket.emit('voice-chat-started', {
+    userIds: otherUserIds
+  });
+  
+  // Also notify other users to start voice chat
+  socket.to(socket.currentRoom).emit('voice-chat-started', {
+    userIds: [socket.id]
+  });
+});
 
   socket.on('voice-chat-response', (data) => {
-    if (!socket.currentRoom) return;
-    
-    const { accepted, targetUserId } = data;
-    
-    // Send response to the requesting user
-    socket.to(targetUserId).emit('voice-chat-response', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName,
-      accepted
-    });
+  if (!socket.currentRoom) return;
+  
+  const { accepted, targetUserId } = data;
+  
+  // Send response to the requesting user
+  socket.to(targetUserId).emit('voice-chat-response', {
+    fromUserId: socket.id,
+    fromUserName: socket.userName,
+    accepted
   });
+  
+  console.log(`Voice chat response from ${socket.userName}: ${accepted ? 'accepted' : 'rejected'}`);
+});
 
   // Handle disconnection
   socket.on('disconnect', () => {
