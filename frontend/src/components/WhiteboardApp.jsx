@@ -1,9 +1,12 @@
+// Updated WhiteboardApp.jsx with proper user data handling
 import React, { useState, useEffect, useCallback } from 'react';
 import HomePage from './HomePage';
 import Header from './Header';
 import Toolbar from './Toolbar';
 import Canvas from './Canvas';
+import VoiceChat from './VoiceChat';
 import { useSocket } from '../hooks/useSocket';
+import { useVoiceChat } from '../hooks/useVoiceChat';
 import { createSocketEventHandler, generateRoomCode, validateRoomCode, formatUserName } from '../utils/socketEvents';
 
 const WhiteboardApp = () => {
@@ -12,7 +15,7 @@ const WhiteboardApp = () => {
   const [roomCode, setRoomCode] = useState("");
   const [currentRoom, setCurrentRoom] = useState("");
   const [userName, setUserName] = useState("");
-  const [connectedUsers, setConnectedUsers] = useState(["You"]);
+  const [connectedUsers, setConnectedUsers] = useState([]);
 
   // Drawing states
   const [isDrawing, setIsDrawing] = useState(false);
@@ -28,6 +31,36 @@ const WhiteboardApp = () => {
   const [socketEventHandler, setSocketEventHandler] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
 
+  // Voice chat integration
+  const {
+    isVoiceChatActive,
+    isMuted,
+    connectedPeers,
+    audioPermission,
+    voiceError,
+    startVoiceChat,
+    stopVoiceChat,
+    toggleMute
+  } = useVoiceChat(socket, currentRoom, userName);
+
+  // Helper function to normalize user data
+  const normalizeUsers = (users) => {
+    if (!Array.isArray(users)) return [];
+    
+    return users.map(user => {
+      if (typeof user === 'string') {
+        return { id: user, name: user };
+      }
+      if (user && typeof user === 'object') {
+        return {
+          id: user.id || user.name || 'unknown',
+          name: user.name || user.id || 'Unknown User'
+        };
+      }
+      return { id: 'unknown', name: 'Unknown User' };
+    }).filter(user => user.id && user.name);
+  };
+
   // Socket event listeners setup
   useEffect(() => {
     if (!socket || !isConnected) return;
@@ -42,6 +75,10 @@ const WhiteboardApp = () => {
       onDisconnect: () => {
         setConnectionStatus('disconnected');
         console.log('Disconnected from server');
+        // Stop voice chat on disconnect
+        if (isVoiceChatActive) {
+          stopVoiceChat();
+        }
       },
       
       onConnectionError: (error) => {
@@ -52,17 +89,29 @@ const WhiteboardApp = () => {
 
       // Room callbacks
       onRoomCreated: (data) => {
-        setCurrentRoom(data.roomCode);
-        setConnectedUsers(data.users || [formatUserName(userName)]);
-        setCurrentPage("whiteboard");
         console.log('Room created successfully:', data.roomCode);
+        setCurrentRoom(data.roomCode);
+        
+        // Normalize users and add current user
+        const normalizedUsers = normalizeUsers(data.users || []);
+        const currentUser = { id: socket.id, name: formatUserName(userName) };
+        const allUsers = [currentUser, ...normalizedUsers.filter(u => u.id !== socket.id)];
+        
+        setConnectedUsers(allUsers);
+        setCurrentPage("whiteboard");
       },
       
       onRoomJoined: (data) => {
-        setConnectedUsers(data.users || []);
-        setElements(data.elements || []); // Load existing canvas elements
-        setCurrentPage("whiteboard");
         console.log('Successfully joined room:', data.roomCode);
+        
+        // Normalize users and add current user
+        const normalizedUsers = normalizeUsers(data.users || []);
+        const currentUser = { id: socket.id, name: formatUserName(userName) };
+        const allUsers = [currentUser, ...normalizedUsers.filter(u => u.id !== socket.id)];
+        
+        setConnectedUsers(allUsers);
+        setElements(data.elements || []);
+        setCurrentPage("whiteboard");
       },
       
       onRoomLeft: () => {
@@ -70,40 +119,54 @@ const WhiteboardApp = () => {
       },
       
       onRoomError: (data) => {
-        alert(data.message || 'Room error occurred');
+        alert(data.error || data.message || 'Room error occurred');
         console.error('Room error:', data);
       },
       
       onUserJoined: (data) => {
-        setConnectedUsers(prev => {
-          const exists = prev.some(user => user === data.userName);
-          return exists ? prev : [...prev, data.userName];
-        });
-        console.log('User joined:', data.userName);
+        console.log('User joined:', data);
+        
+        if (data.user && data.user.id && data.user.name) {
+          setConnectedUsers(prev => {
+            const exists = prev.some(user => user.id === data.user.id);
+            if (exists) return prev;
+            return [...prev, { id: data.user.id, name: data.user.name }];
+          });
+        } else if (data.users) {
+          // Update with full user list if provided
+          const normalizedUsers = normalizeUsers(data.users);
+          const currentUser = { id: socket.id, name: formatUserName(userName) };
+          const allUsers = [currentUser, ...normalizedUsers.filter(u => u.id !== socket.id)];
+          setConnectedUsers(allUsers);
+        }
       },
       
       onUserLeft: (data) => {
-        setConnectedUsers(prev => prev.filter(user => user !== data.userName));
-        console.log('User left:', data.userName);
+        console.log('User left:', data);
+        
+        if (data.userId) {
+          setConnectedUsers(prev => prev.filter(user => user.id !== data.userId));
+        } else if (data.users) {
+          // Update with remaining users if provided
+          const normalizedUsers = normalizeUsers(data.users);
+          const currentUser = { id: socket.id, name: formatUserName(userName) };
+          const allUsers = [currentUser, ...normalizedUsers.filter(u => u.id !== socket.id)];
+          setConnectedUsers(allUsers);
+        }
       },
 
       // Drawing callbacks
       onDrawStart: (data) => {
-        // Handle remote user starting to draw
         console.log('Remote user started drawing:', data);
       },
       
       onDraw: (data) => {
-        // Handle real-time drawing from other users
-        // This would update a temporary drawing state for live preview
         console.log('Remote draw event:', data);
       },
       
       onElementAdded: (data) => {
-        // Add completed element from other users
         if (data.element && data.element.id) {
           setElements(prev => {
-            // Avoid duplicates
             const exists = prev.some(el => el.id === data.element.id);
             return exists ? prev : [...prev, data.element];
           });
@@ -132,7 +195,7 @@ const WhiteboardApp = () => {
     return () => {
       eventHandler?.cleanup();
     };
-  }, [socket, isConnected, userName]);
+  }, [socket, isConnected, userName, isVoiceChatActive, stopVoiceChat]);
 
   // Generate random room code
   const createRoomCode = () => {
@@ -148,8 +211,6 @@ const WhiteboardApp = () => {
     }
 
     const newRoomCode = createRoomCode();
-    
-    // Emit socket event to create room
     socketEventHandler?.createRoom(newRoomCode, formattedName);
   };
 
@@ -166,19 +227,22 @@ const WhiteboardApp = () => {
       return;
     }
 
-    // Emit socket event to join room
     socketEventHandler?.joinRoom(upperRoomCode, formattedName);
   };
 
   const handleLeaveRoom = () => {
-    // Emit leave room event
+    // Stop voice chat before leaving
+    if (isVoiceChatActive) {
+      stopVoiceChat();
+    }
+    
     socketEventHandler?.leaveRoom(currentRoom);
     
     // Reset states
     setCurrentPage("home");
     setCurrentRoom("");
     setRoomCode("");
-    setConnectedUsers(["You"]);
+    setConnectedUsers([]);
     setElements([]);
     setCurrentPath([]);
     setIsDrawing(false);
@@ -339,20 +403,35 @@ const WhiteboardApp = () => {
         handleLeaveRoom={handleLeaveRoom}
       />
       
-      <div className="flex-1 flex overflow-hidden">
-        <Toolbar
-          tool={tool}
-          setTool={setTool}
-          color={color}
-          setColor={setColor}
-          brushSize={brushSize}
-          setBrushSize={setBrushSize}
-          elements={elements}
-          undoLastAction={undoLastAction}
-          clearCanvas={clearCanvas}
-          downloadCanvas={downloadCanvas}
-          connectedUsers={connectedUsers}
-        />
+      <div className="flex-1 flex ">
+        <div className="flex flex-col">
+          <Toolbar
+            tool={tool}
+            setTool={setTool}
+            color={color}
+            setColor={setColor}
+            brushSize={brushSize}
+            setBrushSize={setBrushSize}
+            elements={elements}
+            undoLastAction={undoLastAction}
+            clearCanvas={clearCanvas}
+            downloadCanvas={downloadCanvas}
+            connectedUsers={connectedUsers}
+          />
+          
+          {/* Voice Chat Component */}
+          <VoiceChat
+            isVoiceChatActive={isVoiceChatActive}
+            isMuted={isMuted}
+            connectedPeers={connectedPeers}
+            audioPermission={audioPermission}
+            voiceError={voiceError}
+            startVoiceChat={startVoiceChat}
+            stopVoiceChat={stopVoiceChat}
+            toggleMute={toggleMute}
+            connectedUsers={connectedUsers}
+          />
+        </div>
         
         <Canvas
           elements={elements}
@@ -381,7 +460,5 @@ const WhiteboardApp = () => {
     </div>
   );
 };
-
-
 
 export default WhiteboardApp;

@@ -226,6 +226,91 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Voice chat signaling events
+  socket.on('voice-offer', (data) => {
+    if (!socket.currentRoom) return;
+    
+    const { targetUserId, offer } = data;
+    
+    // Send offer to specific user
+    socket.to(targetUserId).emit('voice-offer', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName,
+      offer
+    });
+    
+    console.log(`Voice offer from ${socket.id} to ${targetUserId}`);
+  });
+
+  socket.on('voice-answer', (data) => {
+    if (!socket.currentRoom) return;
+    
+    const { targetUserId, answer } = data;
+    
+    // Send answer to specific user
+    socket.to(targetUserId).emit('voice-answer', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName,
+      answer
+    });
+    
+    console.log(`Voice answer from ${socket.id} to ${targetUserId}`);
+  });
+
+  socket.on('voice-ice-candidate', (data) => {
+    if (!socket.currentRoom) return;
+    
+    const { targetUserId, candidate } = data;
+    
+    // Send ICE candidate to specific user
+    socket.to(targetUserId).emit('voice-ice-candidate', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName,
+      candidate
+    });
+  });
+
+  socket.on('voice-toggle', (data) => {
+    if (!socket.currentRoom) return;
+    
+    const { isMuted } = data;
+    
+    // Update user's voice status in room
+    const result = roomManager.updateUserVoiceStatus(socket.currentRoom, socket.id, { isMuted });
+    
+    if (result.success) {
+      // Notify all users in room about voice status change
+      socket.to(socket.currentRoom).emit('user-voice-status', {
+        userId: socket.id,
+        userName: socket.userName,
+        isMuted
+      });
+    }
+  });
+
+  socket.on('request-voice-chat', (data) => {
+    if (!socket.currentRoom) return;
+    
+    // Notify all users in room that someone wants to start voice chat
+    socket.to(socket.currentRoom).emit('voice-chat-requested', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName
+    });
+  });
+
+  socket.on('voice-chat-response', (data) => {
+    if (!socket.currentRoom) return;
+    
+    const { accepted, targetUserId } = data;
+    
+    // Send response to the requesting user
+    socket.to(targetUserId).emit('voice-chat-response', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName,
+      accepted
+    });
+  });
+
   // Handle disconnection
   socket.on('disconnect', () => {
     console.log(`User disconnected: ${socket.id}`);

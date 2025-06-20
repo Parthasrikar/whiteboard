@@ -1,4 +1,4 @@
-const { v4: uuidv4 } = require('uuid');
+const { v4: uuidv4 } = require("uuid");
 
 class RoomManager {
   constructor() {
@@ -7,7 +7,7 @@ class RoomManager {
 
   createRoom(roomCode, userId, userName) {
     if (this.rooms.has(roomCode)) {
-      return { success: false, error: 'Room already exists' };
+      return { success: false, error: "Room already exists" };
     }
 
     const room = {
@@ -15,15 +15,20 @@ class RoomManager {
       createdAt: new Date(),
       users: new Map(),
       elements: [],
-      maxUsers: 10
+      maxUsers: 10,
+      voiceChatEnabled: true, // Add voice chat capability
     };
 
-    // Add creator to room
+    // Add creator to room with voice status
     room.users.set(userId, {
       id: userId,
       name: userName,
       isOwner: true,
-      joinedAt: new Date()
+      joinedAt: new Date(),
+      voiceStatus: {
+        isMuted: true,
+        isConnected: false,
+      },
     });
 
     this.rooms.set(roomCode, room);
@@ -32,13 +37,13 @@ class RoomManager {
 
   joinRoom(roomCode, userId, userName) {
     const room = this.rooms.get(roomCode);
-    
+
     if (!room) {
-      return { success: false, error: 'Room not found' };
+      return { success: false, error: "Room not found" };
     }
 
     if (room.users.size >= room.maxUsers) {
-      return { success: false, error: 'Room is full' };
+      return { success: false, error: "Room is full" };
     }
 
     // Check if user is already in room
@@ -46,12 +51,16 @@ class RoomManager {
       return { success: true, room, rejoined: true };
     }
 
-    // Add user to room
+    // Add user to room with voice status
     room.users.set(userId, {
       id: userId,
       name: userName,
       isOwner: false,
-      joinedAt: new Date()
+      joinedAt: new Date(),
+      voiceStatus: {
+        isMuted: true,
+        isConnected: false,
+      },
     });
 
     return { success: true, room };
@@ -59,14 +68,14 @@ class RoomManager {
 
   leaveRoom(roomCode, userId) {
     const room = this.rooms.get(roomCode);
-    
+
     if (!room) {
-      return { success: false, error: 'Room not found' };
+      return { success: false, error: "Room not found" };
     }
 
     const user = room.users.get(userId);
     if (!user) {
-      return { success: false, error: 'User not in room' };
+      return { success: false, error: "User not in room" };
     }
 
     room.users.delete(userId);
@@ -93,7 +102,7 @@ class RoomManager {
   getRoomUsers(roomCode) {
     const room = this.rooms.get(roomCode);
     if (!room) return [];
-    
+
     return Array.from(room.users.values());
   }
 
@@ -104,7 +113,7 @@ class RoomManager {
     room.elements.push({
       ...element,
       id: element.id || uuidv4(),
-      timestamp: new Date()
+      timestamp: new Date(),
     });
 
     return true;
@@ -137,7 +146,7 @@ class RoomManager {
     const maxAge = 24 * 60 * 60 * 1000; // 24 hours
 
     for (const [roomCode, room] of this.rooms.entries()) {
-      if (room.users.size === 0 && (now - room.createdAt) > maxAge) {
+      if (room.users.size === 0 && now - room.createdAt > maxAge) {
         this.rooms.delete(roomCode);
         console.log(`Cleaned up inactive room: ${roomCode}`);
       }
@@ -146,16 +155,63 @@ class RoomManager {
 
   getStats() {
     const totalRooms = this.rooms.size;
-    const totalUsers = Array.from(this.rooms.values())
-      .reduce((sum, room) => sum + room.users.size, 0);
-    
+    const totalUsers = Array.from(this.rooms.values()).reduce(
+      (sum, room) => sum + room.users.size,
+      0
+    );
+
     return {
       totalRooms,
       totalUsers,
-      activeRooms: Array.from(this.rooms.values())
-        .filter(room => room.users.size > 0).length
+      activeRooms: Array.from(this.rooms.values()).filter(
+        (room) => room.users.size > 0
+      ).length,
     };
   }
+
+  // Add these methods to your RoomManager class
+
+  updateUserVoiceStatus(roomCode, userId, voiceStatus) {
+    const room = this.rooms.get(roomCode);
+    if (!room) {
+      return { success: false, error: "Room not found" };
+    }
+
+    const user = room.users.get(userId);
+    if (!user) {
+      return { success: false, error: "User not in room" };
+    }
+
+    // Update user's voice status
+    user.voiceStatus = {
+      ...user.voiceStatus,
+      ...voiceStatus,
+      lastUpdated: new Date(),
+    };
+
+    return { success: true, user };
+  }
+
+  getUsersWithVoiceStatus(roomCode) {
+    const room = this.rooms.get(roomCode);
+    if (!room) return [];
+
+    return Array.from(room.users.values()).map((user) => ({
+      id: user.id,
+      name: user.name,
+      isOwner: user.isOwner,
+      voiceStatus: user.voiceStatus || {
+        isMuted: true,
+        isConnected: false,
+      },
+    }));
+  }
+
+  // Update the existing createRoom method to include voice status
+  
+
+  // Update the existing joinRoom method to include voice status
+  
 }
 
 module.exports = RoomManager;
