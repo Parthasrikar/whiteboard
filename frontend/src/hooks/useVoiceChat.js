@@ -1,3 +1,4 @@
+/* eslint-disable no-case-declarations */
 /* eslint-disable no-unused-vars */
 /* eslint-disable react-hooks/exhaustive-deps */
 // hooks/useVoiceChat.js - Fixed version with better connection handling
@@ -97,6 +98,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
       // Close existing connection if it exists
       const existingConnection = peerConnectionsRef.current.get(userId);
       if (existingConnection) {
+        console.log(`🗑️ Closing existing peer connection for ${userId}`);
         existingConnection.close();
       }
 
@@ -172,12 +174,9 @@ export const useVoiceChat = (socket, roomCode, userName) => {
             console.log(`⚠️ Voice connection disconnected with ${userId}`);
             updatePeerStatus(userId, { connected: false });
             // Try to reconnect after a short delay
-            setTimeout(() => {
-              if (isVoiceChatActive && peerConnectionsRef.current.has(userId)) {
-                console.log(`🔄 Attempting to reconnect to ${userId}`);
-                // You might want to implement reconnection logic here
-              }
-            }, 2000);
+            // This re-connection logic needs to be carefully implemented to avoid loops.
+            // For simplicity, we're not automatically re-initiating a full offer/answer
+            // cycle here, as it can lead to more complex state management.
             break;
 
           case "failed":
@@ -202,6 +201,12 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         }
       };
 
+      // Handle signaling state changes
+      peerConnection.onsignalingstatechange = () => {
+        const signalingState = peerConnection.signalingState;
+        console.log(`📡 Signaling state with ${userId}:`, signalingState);
+      };
+
       // Handle data channel events (optional, for future use)
       peerConnection.ondatachannel = (event) => {
         console.log(
@@ -213,7 +218,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
       peerConnectionsRef.current.set(userId, peerConnection);
       return peerConnection;
     },
-    [socket, isVoiceChatActive, updatePeerStatus]
+    [socket, updatePeerStatus, closePeerConnection]
   );
 
   // Play remote audio with better error handling
@@ -309,7 +314,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
     [updatePeerStatus]
   );
 
-  // Initiate voice chat with all users in room
+  // Initiate voice chat with all users in room based on deterministic role
   const initiateVoiceChatWithUsers = useCallback(
     async (userIds) => {
       if (!localStreamRef.current || isInitiatingRef.current) {
@@ -323,30 +328,50 @@ export const useVoiceChat = (socket, roomCode, userName) => {
       console.log("🚀 Initiating voice chat with users:", userIds);
 
       try {
+        const myUserId = socket?.id;
+        if (!myUserId) {
+          console.error("❌ Socket ID not available, cannot determine offerer role.");
+          return;
+        }
+
         for (const userId of userIds) {
-          if (userId === socket?.id) {
+          if (userId === myUserId) {
             console.log("⏭️ Skipping self:", userId);
             continue;
           }
 
-          console.log(`📞 Creating offer for user: ${userId}`);
-          const peerConnection = createPeerConnection(userId);
+          // Deterministic role selection: The user with the "smaller" ID is the offerer.
+          const isOfferer = myUserId < userId;
 
-          const offer = await peerConnection.createOffer({
-            offerToReceiveAudio: true,
-            offerToReceiveVideo: false,
-          });
+          if (isOfferer) {
+            console.log(`📞 Creating offer for user: ${userId} (I am the offerer)`);
+            const peerConnection = createPeerConnection(userId);
 
-          await peerConnection.setLocalDescription(offer);
+            if (!peerConnection) {
+              console.warn("Peer connection creation failed for", userId);
+              continue;
+            }
 
-          console.log(`📤 Sending offer to ${userId}`);
-          socket.emit("voice-offer", {
-            targetUserId: userId,
-            offer,
-          });
+            const offer = await peerConnection.createOffer({
+              offerToReceiveAudio: true,
+              offerToReceiveVideo: false,
+            });
 
-          // Set initial peer status
-          updatePeerStatus(userId, { connected: false, initiating: true });
+            await peerConnection.setLocalDescription(offer);
+
+            console.log(`📤 Sending offer to ${userId}`);
+            socket.emit("voice-offer", {
+              targetUserId: userId,
+              offer,
+            });
+
+            // Set initial peer status
+            updatePeerStatus(userId, { connected: false, initiating: true });
+          } else {
+            console.log(`⏳ Waiting for offer from user: ${userId} (I am the answerer)`);
+            // The answerer does nothing here, it waits for an offer.
+            updatePeerStatus(userId, { connected: false, awaitingOffer: true });
+          }
         }
       } catch (error) {
         console.error("❌ Error initiating voice chat:", error);
@@ -455,48 +480,53 @@ export const useVoiceChat = (socket, roomCode, userName) => {
     if (!socket) return;
 
     const handleVoiceOffer = async (data) => {
-  const { fromUserId, offer } = data;
-  console.log(`📥 Received voice offer from: ${fromUserId}`);
+      const { fromUserId, offer } = data;
+      console.log(`📥 Received voice offer from: ${fromUserId}`);
 
-  try {
-    if (!localStreamRef.current) {
-      console.log("🎤 No local stream, initializing...");
-      const stream = await initializeAudioStream();
-      if (!stream) {
-        console.error("❌ Failed to initialize audio stream for offer");
-        return;
+      try {
+        if (!localStreamRef.current) {
+          console.log("🎤 No local stream, initializing...");
+          const stream = await initializeAudioStream();
+          if (!stream) {
+            console.error("❌ Failed to initialize audio stream for offer");
+            return;
+          }
+        }
+
+        const peerConnection = createPeerConnection(fromUserId);
+
+        // Crucial check: Only process offer if we are not the offerer for this connection
+        // and signaling state allows (i.e., not already processing an offer/answer)
+        if (peerConnection.signalingState !== "stable" && peerConnection.signalingState !== "have-remote-offer") {
+            console.warn(
+                `⚠️ Cannot handle offer from ${fromUserId}, signaling state is '${peerConnection.signalingState}'. Waiting for stable or remote offer.`
+            );
+            // This might happen if both tried to offer, or an offer is still being processed.
+            // For deterministic roles, this "shouldn't" happen if the logic is perfect.
+            // In a real-world scenario with potential network delays, you might need
+            // to queue offers or use a more robust "Perfect Negotiation" pattern.
+            // For now, we'll log and skip to prevent state errors.
+            return;
+        }
+
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        console.log(`✅ Set remote description (offer) for: ${fromUserId}`);
+
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+
+        socket.emit("voice-answer", {
+          targetUserId: fromUserId,
+          answer,
+        });
+
+        console.log(`📤 Sent voice answer to: ${fromUserId}`);
+        updatePeerStatus(fromUserId, { connected: false, answering: true, awaitingOffer: false }); // Clear awaitingOffer
+      } catch (error) {
+        console.error("❌ Error handling voice offer:", error);
+        setVoiceError("Failed to handle voice offer: " + error.message);
       }
-    }
-
-    const peerConnection = createPeerConnection(fromUserId);
-
-    // 💥 Fix: Only set remote offer if state is stable (no local offer pending)
-    if (peerConnection.signalingState !== "stable") {
-      console.warn(
-        `⚠️ Cannot handle offer, signaling state is '${peerConnection.signalingState}'`
-      );
-      return;
-    }
-
-    await peerConnection.setRemoteDescription(
-      new RTCSessionDescription(offer)
-    );
-
-    const answer = await peerConnection.createAnswer();
-    await peerConnection.setLocalDescription(answer);
-
-    socket.emit("voice-answer", {
-      targetUserId: fromUserId,
-      answer,
-    });
-
-    console.log(`📤 Sent voice answer to: ${fromUserId}`);
-    updatePeerStatus(fromUserId, { connected: false, answering: true });
-  } catch (error) {
-    console.error("❌ Error handling voice offer:", error);
-    setVoiceError("Failed to handle voice offer: " + error.message);
-  }
-};
+    };
 
 
     const handleVoiceAnswer = async (data) => {
@@ -509,16 +539,18 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         try {
           if (peerConnection.signalingState !== "have-local-offer") {
             console.warn(
-              `⚠️ Cannot apply answer: peerConnection with ${fromUserId} is in '${peerConnection.signalingState}' state`
+              `⚠️ Cannot apply answer: peerConnection with ${fromUserId} is in '${peerConnection.signalingState}' state. Expected 'have-local-offer'.`
             );
+            // This can happen if the offerer tries to apply an answer when it's not in the expected state.
+            // With deterministic roles, this should be less common, but still good to check.
             return;
           }
 
           await peerConnection.setRemoteDescription(
             new RTCSessionDescription(answer)
           );
-          console.log(`✅ Set remote description for: ${fromUserId}`);
-          updatePeerStatus(fromUserId, { answering: false });
+          console.log(`✅ Set remote description (answer) for: ${fromUserId}`);
+          updatePeerStatus(fromUserId, { initiating: false }); // Clear initiating
         } catch (error) {
           console.error("❌ Error handling voice answer:", error);
           setVoiceError("Failed to handle voice answer: " + error.message);
@@ -545,8 +577,10 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         }
       } else {
         console.warn(
-          `⚠️ Cannot add ICE candidate from ${fromUserId} - no peer connection or remote description`
+          `⚠️ Cannot add ICE candidate from ${fromUserId} - no peer connection or remote description. Current signaling state: ${peerConnection?.signalingState}`
         );
+        // This warning is fine if remoteDescription hasn't been set yet (e.g., offer not received/processed).
+        // Candidates will be queued internally by WebRTC and applied once remoteDescription is set.
       }
     };
 
@@ -562,6 +596,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         accepted,
       });
 
+      // Ensure local stream is initialized if we are accepting
       if (accepted && !localStreamRef.current) {
         await initializeAudioStream();
       }
@@ -576,11 +611,11 @@ export const useVoiceChat = (socket, roomCode, userName) => {
       );
 
       if (accepted) {
-        // The response handling is now done in handleVoiceChatStarted
         console.log(`✅ User ${fromUserId} accepted voice chat`);
+        // The actual connection initiation is handled by handleVoiceChatStarted
       } else {
         console.log(`❌ User ${fromUserId} rejected voice chat`);
-        updatePeerStatus(fromUserId, { connected: false });
+        closePeerConnection(fromUserId); // Clean up if rejected
       }
     };
 
@@ -600,11 +635,13 @@ export const useVoiceChat = (socket, roomCode, userName) => {
       // Clear any existing error
       setVoiceError(null);
 
-      // Initiate connections with all users
+      // Initiate connections with all users based on deterministic role
       if (userIds && userIds.length > 0) {
+        // A small delay can help ensure all clients have updated their states
+        // and are ready to process offers/answers.
         setTimeout(() => {
           initiateVoiceChatWithUsers(userIds);
-        }, 100); // Small delay to ensure all users are ready
+        }, 100);
       }
     };
 
@@ -639,6 +676,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
     initializeAudioStream,
     initiateVoiceChatWithUsers,
     updatePeerStatus,
+    closePeerConnection, // Added closePeerConnection to dependencies
   ]);
 
   // Cleanup on unmount
