@@ -1,5 +1,5 @@
 // Updated WhiteboardApp.jsx with VoiceChat integrated into Toolbar
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import HomePage from './HomePage';
 import Header from './Header';
 import Toolbar from './Toolbar';
@@ -17,6 +17,16 @@ const WhiteboardApp = () => {
   const [currentRoom, setCurrentRoom] = useState("");
   const [userName, setUserName] = useState("");
   const [connectedUsers, setConnectedUsers] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [toast, setToast] = useState(null);
+
+  // Toast utility
+  const showToast = useCallback((message, type = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast(prev => prev?.message === message ? null : prev);
+    }, 3000);
+  }, []);
 
   // Drawing states
   const [isDrawing, setIsDrawing] = useState(false);
@@ -26,11 +36,17 @@ const WhiteboardApp = () => {
   const [currentPath, setCurrentPath] = useState([]);
   const [startPoint, setStartPoint] = useState(null);
   const [elements, setElements] = useState([]);
+  const [remoteDrawings, setRemoteDrawings] = useState({});
+  const [remoteCursors, setRemoteCursors] = useState({});
+  const lastCursorEmitRef = React.useRef(0);
 
   // Socket connection
   const { socket, isConnected } = useSocket();
   const [socketEventHandler, setSocketEventHandler] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
+
+  // --- Stable callback ref so the socket handler never needs to be re-created ---
+  const callbacksRef = useRef({});
 
   // Voice chat integration
   const {
@@ -62,141 +78,98 @@ const WhiteboardApp = () => {
     }).filter(user => user.id && user.name);
   };
 
-  // Socket event listeners setup
+  // Keep callbacksRef always pointing at the latest closures
+  useEffect(() => {
+    callbacksRef.current = {
+      onConnect: () => setConnectionStatus('connected'),
+      onDisconnect: () => {
+        setConnectionStatus('disconnected');
+        if (isVoiceChatActive) stopVoiceChat();
+      },
+      onConnectionError: () => setConnectionStatus('error'),
+
+      onRoomCreated: (data) => {
+        setCurrentRoom(data.roomCode);
+        const normalizedUsers = normalizeUsers(data.users || []);
+        const currentUser = { id: socket?.id, name: formatUserName(userName) };
+        setConnectedUsers([currentUser, ...normalizedUsers.filter(u => u.id !== socket?.id)]);
+        setCurrentPage('whiteboard');
+      },
+      onRoomJoined: (data) => {
+        const normalizedUsers = normalizeUsers(data.users || []);
+        const currentUser = { id: socket?.id, name: formatUserName(userName) };
+        setConnectedUsers([currentUser, ...normalizedUsers.filter(u => u.id !== socket?.id)]);
+        setElements(data.elements || []);
+        setCurrentPage('whiteboard');
+      },
+      onRoomLeft: () => handleLeaveRoom(),
+      onRoomError: (data) => showToast(data.error || 'Room error occurred', 'error'),
+
+      onUserJoined: (data) => {
+        if (data.user?.id && data.user?.name) {
+          setConnectedUsers(prev => prev.some(u => u.id === data.user.id) ? prev : [...prev, { id: data.user.id, name: data.user.name }]);
+        } else if (data.users) {
+          const norm = normalizeUsers(data.users);
+          setConnectedUsers([{ id: socket?.id, name: formatUserName(userName) }, ...norm.filter(u => u.id !== socket?.id)]);
+        }
+      },
+      onUserLeft: (data) => {
+        if (data.userId) {
+          setConnectedUsers(prev => prev.filter(u => u.id !== data.userId));
+        }
+      },
+
+      onDrawStart: (data) => {
+        setRemoteDrawings(prev => ({
+          ...prev,
+          [data.userId]: { tool: data.tool, color: data.color, brushSize: data.brushSize, points: [data.point], startPoint: data.point }
+        }));
+      },
+      onDraw: (data) => {
+        setRemoteDrawings(prev => {
+          const remote = prev[data.userId];
+          if (!remote) return prev;
+          return { ...prev, [data.userId]: { ...remote, points: [...remote.points, data.point] } };
+        });
+        setRemoteCursors(prev => ({ ...prev, [data.userId]: { x: data.point.x, y: data.point.y, userName: data.userName, color: data.color } }));
+      },
+      onElementAdded: (data) => {
+        if (data.element?.id) {
+          setElements(prev => prev.some(el => el.id === data.element.id) ? prev : [...prev, data.element]);
+        }
+        if (data.userId) {
+          setRemoteDrawings(prev => { const s = { ...prev }; delete s[data.userId]; return s; });
+        }
+      },
+      onCursorMove: (data) => {
+        setRemoteCursors(prev => ({ ...prev, [data.userId]: { x: data.point.x, y: data.point.y, userName: data.userName, color: data.color } }));
+      },
+
+      // Chat — most critical
+      onReceiveMessage: (msg) => {
+        console.log('[Chat] onReceiveMessage called, msg:', msg);
+        setMessages(prev => [...prev, msg]);
+      },
+
+      onCanvasCleared: () => { setElements([]); setCurrentPath([]); setIsDrawing(false); },
+      onCanvasUpdated: (data) => { if (data.elements) setElements(data.elements); },
+    };
+  });
+
+  // Create the socket event handler ONCE when the socket connects — never re-create it
   useEffect(() => {
     if (!socket || !isConnected) return;
 
-    const callbacks = {
-      // Connection callbacks
-      onConnect: () => {
-        setConnectionStatus('connected');
-        console.log('Successfully connected to server');
-      },
-      
-      onDisconnect: () => {
-        setConnectionStatus('disconnected');
-        console.log('Disconnected from server');
-        // Stop voice chat on disconnect
-        if (isVoiceChatActive) {
-          stopVoiceChat();
-        }
-      },
-      
-      onConnectionError: (error) => {
-        setConnectionStatus('error');
-        console.error('Connection error:', error);
-        alert('Connection error. Please try again.');
-      },
+    // Stable proxy: always delegates to the current callbacksRef
+    const stableCallbacks = new Proxy({}, {
+      get: (_, key) => (...args) => callbacksRef.current[key]?.(...args)
+    });
 
-      // Room callbacks
-      onRoomCreated: (data) => {
-        console.log('Room created successfully:', data.roomCode);
-        setCurrentRoom(data.roomCode);
-        
-        // Normalize users and add current user
-        const normalizedUsers = normalizeUsers(data.users || []);
-        const currentUser = { id: socket.id, name: formatUserName(userName) };
-        const allUsers = [currentUser, ...normalizedUsers.filter(u => u.id !== socket.id)];
-        
-        setConnectedUsers(allUsers);
-        setCurrentPage("whiteboard");
-      },
-      
-      onRoomJoined: (data) => {
-        console.log('Successfully joined room:', data.roomCode);
-        
-        // Normalize users and add current user
-        const normalizedUsers = normalizeUsers(data.users || []);
-        const currentUser = { id: socket.id, name: formatUserName(userName) };
-        const allUsers = [currentUser, ...normalizedUsers.filter(u => u.id !== socket.id)];
-        
-        setConnectedUsers(allUsers);
-        setElements(data.elements || []);
-        setCurrentPage("whiteboard");
-      },
-      
-      onRoomLeft: () => {
-        handleLeaveRoom();
-      },
-      
-      onRoomError: (data) => {
-        alert(data.error || data.message || 'Room error occurred');
-        console.error('Room error:', data);
-      },
-      
-      onUserJoined: (data) => {
-        console.log('User joined:', data);
-        
-        if (data.user && data.user.id && data.user.name) {
-          setConnectedUsers(prev => {
-            const exists = prev.some(user => user.id === data.user.id);
-            if (exists) return prev;
-            return [...prev, { id: data.user.id, name: data.user.name }];
-          });
-        } else if (data.users) {
-          // Update with full user list if provided
-          const normalizedUsers = normalizeUsers(data.users);
-          const currentUser = { id: socket.id, name: formatUserName(userName) };
-          const allUsers = [currentUser, ...normalizedUsers.filter(u => u.id !== socket.id)];
-          setConnectedUsers(allUsers);
-        }
-      },
-      
-      onUserLeft: (data) => {
-        console.log('User left:', data);
-        
-        if (data.userId) {
-          setConnectedUsers(prev => prev.filter(user => user.id !== data.userId));
-        } else if (data.users) {
-          // Update with remaining users if provided
-          const normalizedUsers = normalizeUsers(data.users);
-          const currentUser = { id: socket.id, name: formatUserName(userName) };
-          const allUsers = [currentUser, ...normalizedUsers.filter(u => u.id !== socket.id)];
-          setConnectedUsers(allUsers);
-        }
-      },
-
-      // Drawing callbacks
-      onDrawStart: (data) => {
-        console.log('Remote user started drawing:', data);
-      },
-      
-      onDraw: (data) => {
-        console.log('Remote draw event:', data);
-      },
-      
-      onElementAdded: (data) => {
-        if (data.element && data.element.id) {
-          setElements(prev => {
-            const exists = prev.some(el => el.id === data.element.id);
-            return exists ? prev : [...prev, data.element];
-          });
-        }
-        console.log('Remote element added:', data);
-      },
-      
-      onCanvasCleared: (data) => {
-        setElements([]);
-        setCurrentPath([]);
-        setIsDrawing(false);
-        console.log('Canvas cleared by:', data.userName);
-      },
-      
-      onCanvasUpdated: (data) => {
-        if (data.elements) {
-          setElements(data.elements);
-        }
-        console.log('Canvas updated:', data);
-      }
-    };
-
-    const eventHandler = createSocketEventHandler(socket, callbacks);
+    const eventHandler = createSocketEventHandler(socket, stableCallbacks);
     setSocketEventHandler(eventHandler);
 
-    return () => {
-      eventHandler?.cleanup();
-    };
-  }, [socket, isConnected, userName, isVoiceChatActive, stopVoiceChat]);
+    return () => { eventHandler.cleanup(); };
+  }, [socket, isConnected]); // Only depend on socket identity — not userName or other state
 
   // Generate random room code
   const createRoomCode = () => {
@@ -207,7 +180,7 @@ const WhiteboardApp = () => {
   const handleCreateRoom = () => {
     const formattedName = formatUserName(userName);
     if (!formattedName) {
-      alert("Please enter your name");
+      showToast("Please enter your name", "error");
       return;
     }
 
@@ -218,13 +191,13 @@ const WhiteboardApp = () => {
   const handleJoinRoom = () => {
     const formattedName = formatUserName(userName);
     if (!formattedName) {
-      alert("Please enter your name");
+      showToast("Please enter your name", "error");
       return;
     }
     
     const upperRoomCode = roomCode.toUpperCase();
     if (!validateRoomCode(upperRoomCode)) {
-      alert("Please enter a valid room code (4-8 characters, letters and numbers only)");
+      showToast("Please enter a valid room code (4-8 characters, letters and numbers only)", "error");
       return;
     }
 
@@ -248,18 +221,27 @@ const WhiteboardApp = () => {
     setCurrentPath([]);
     setIsDrawing(false);
     setStartPoint(null);
+    setRemoteDrawings({});
+    setRemoteCursors({});
+    setMessages([]);
   };
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(currentRoom);
-    alert("Room code copied to clipboard!");
+    showToast("Room code copied to clipboard!", "success");
   };
 
   // Drawing event handlers
   const handleMouseDown = useCallback((e) => {
-    const rect = e.target.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    let x, y;
+    if (e.nativeEvent && e.nativeEvent.offsetX !== undefined) {
+      x = e.nativeEvent.offsetX;
+      y = e.nativeEvent.offsetY;
+    } else {
+      const rect = e.target.getBoundingClientRect();
+      x = e.clientX - rect.left;
+      y = e.clientY - rect.top;
+    }
     
     setIsDrawing(true);
     
@@ -282,11 +264,30 @@ const WhiteboardApp = () => {
   }, [tool, color, brushSize, currentRoom, userName, socketEventHandler]);
 
   const handleMouseMove = useCallback((e) => {
-    if (!isDrawing) return;
+    let x, y;
+    if (e.nativeEvent && e.nativeEvent.offsetX !== undefined) {
+      x = e.nativeEvent.offsetX;
+      y = e.nativeEvent.offsetY;
+    } else {
+      const rect = e.target.getBoundingClientRect();
+      x = e.clientX - rect.left;
+      y = e.clientY - rect.top;
+    }
 
-    const rect = e.target.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    if (!isDrawing) {
+      // Throttle cursor emit heavily when not drawing
+      const now = Date.now();
+      if (now - lastCursorEmitRef.current > 40) {
+        socketEventHandler?.emitCursorMove({
+          point: { x, y },
+          roomCode: currentRoom,
+          userName: formatUserName(userName),
+          color
+        });
+        lastCursorEmitRef.current = now;
+      }
+      return;
+    }
     
     setCurrentPath(prev => [...prev, { x, y }]);
 
@@ -381,22 +382,70 @@ const WhiteboardApp = () => {
     }
   };
 
+  // Global Connection Indicator Bulb Component
+  const displayStatus = isConnected ? 'connected' : connectionStatus;
+  
+  const ConnectionIndicator = () => (
+    <div className="fixed bottom-6 right-6 flex items-center bg-white/95 backdrop-blur-md px-4 py-2.5 rounded-full shadow-[0_4px_24px_rgba(0,0,0,0.06)] border border-gray-200/60 z-50 hover:scale-105 transition-transform duration-200 cursor-default">
+      <div className="relative flex h-3 w-3 mr-3">
+        {displayStatus === 'connected' && (
+          <>
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" style={{ animationDuration: '3s' }}></span>
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+          </>
+        )}
+        {displayStatus === 'error' && (
+          <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+        )}
+        {displayStatus !== 'connected' && displayStatus !== 'error' && (
+          <>
+            <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+          </>
+        )}
+      </div>
+      <span className="text-[11px] font-bold uppercase tracking-wider text-gray-600">
+        {displayStatus === 'connected' ? 'Online' : displayStatus === 'error' ? 'Offline' : 'Connecting'}
+      </span>
+    </div>
+  );
+
+  const ToastNotification = () => {
+    if (!toast) return null;
+    return (
+      <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[100] animate-in slide-in-from-top-4 fade-in duration-200">
+        <div className={`px-4 py-3 rounded-2xl shadow-xl border flex items-center gap-3 backdrop-blur-xl ${
+          toast.type === 'error' ? 'bg-red-50/95 border-red-200 text-red-700' :
+          toast.type === 'success' ? 'bg-green-50/95 border-green-200 text-green-700' :
+          'bg-white/95 border-gray-200 text-gray-700'
+        }`}>
+          <span className="text-[13px] font-bold tracking-wide">{toast.message}</span>
+        </div>
+      </div>
+    );
+  };
+
   // Render appropriate page
   if (currentPage === "home") {
     return (
-      <HomePage
-        userName={userName}
-        setUserName={setUserName}
-        roomCode={roomCode}
-        setRoomCode={setRoomCode}
-        handleCreateRoom={handleCreateRoom}
-        handleJoinRoom={handleJoinRoom}
-      />
+      <>
+        <ToastNotification />
+        <HomePage
+          userName={userName}
+          setUserName={setUserName}
+          roomCode={roomCode}
+          setRoomCode={setRoomCode}
+          handleCreateRoom={handleCreateRoom}
+          handleJoinRoom={handleJoinRoom}
+        />
+        <ConnectionIndicator />
+      </>
     );
   }
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">
+      <ToastNotification />
       <Header
         currentRoom={currentRoom}
         connectedUsers={connectedUsers}
@@ -404,7 +453,7 @@ const WhiteboardApp = () => {
         handleLeaveRoom={handleLeaveRoom}
       />
       
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative">
         {/* Enhanced Toolbar with integrated VoiceChat */}
         <Toolbar
           tool={tool}
@@ -427,6 +476,8 @@ const WhiteboardApp = () => {
           startVoiceChat={startVoiceChat}
           stopVoiceChat={stopVoiceChat}
           toggleMute={toggleMute}
+          messages={messages}
+          sendMessage={(text) => socketEventHandler?.sendMessage(text, formatUserName(userName))}
         />
         
         {/* Canvas takes the remaining space */}
@@ -442,19 +493,14 @@ const WhiteboardApp = () => {
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseLeave}
+          remoteCursors={remoteCursors}
+          remoteDrawings={remoteDrawings}
         />
       </div>
       
-      {/* Connection status indicator */}
-      {connectionStatus !== 'connected' && (
-        <div className={`fixed bottom-4 right-4 px-4 py-2 rounded-lg ${
-          connectionStatus === 'error' 
-            ? 'bg-red-100 border border-red-400 text-red-800'
-            : 'bg-yellow-100 border border-yellow-400 text-yellow-800'
-        }`}>
-          {connectionStatus === 'error' ? 'Connection failed' : 'Connecting to server...'}
-        </div>
-      )}
+      
+      {/* Global Connection status indicator bulb */}
+      <ConnectionIndicator />
     </div>
   );
 };

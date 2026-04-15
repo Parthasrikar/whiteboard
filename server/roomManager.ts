@@ -1,22 +1,59 @@
-const { v4: uuidv4 } = require("uuid");
+import { v4 as uuidv4 } from "uuid";
+
+export interface VoiceStatus {
+  isMuted: boolean;
+  isConnected: boolean;
+  lastUpdated?: Date;
+}
+
+export interface User {
+  id: string;
+  name: string;
+  isOwner: boolean;
+  joinedAt: Date;
+  voiceStatus: VoiceStatus;
+}
+
+export interface RoomElement {
+  id: string;
+  type: string;
+  timestamp: Date;
+  [key: string]: any;
+}
+
+export interface Room {
+  id: string;
+  createdAt: Date;
+  users: Map<string, User>;
+  elements: RoomElement[];
+  maxUsers: number;
+  voiceChatEnabled: boolean;
+}
 
 class RoomManager {
+  private rooms: Map<string, Room>;
+  
+  // Incremental tracking for massive optimization of getStats() O(1)
+  private statsTotalUsers: number = 0;
+  private activeRoomIds: Set<string>;
+
   constructor() {
     this.rooms = new Map();
+    this.activeRoomIds = new Set();
   }
 
-  createRoom(roomCode, userId, userName) {
+  createRoom(roomCode: string, userId: string, userName: string) {
     if (this.rooms.has(roomCode)) {
       return { success: false, error: "Room already exists" };
     }
 
-    const room = {
+    const room: Room = {
       id: roomCode,
       createdAt: new Date(),
       users: new Map(),
       elements: [],
       maxUsers: 10,
-      voiceChatEnabled: true, // Add voice chat capability
+      voiceChatEnabled: true,
     };
 
     // Add creator to room with voice status
@@ -32,10 +69,15 @@ class RoomManager {
     });
 
     this.rooms.set(roomCode, room);
+    
+    // Incremental Stats tracking
+    this.statsTotalUsers++;
+    this.activeRoomIds.add(roomCode);
+
     return { success: true, room };
   }
 
-  joinRoom(roomCode, userId, userName) {
+  joinRoom(roomCode: string, userId: string, userName: string) {
     const room = this.rooms.get(roomCode);
 
     if (!room) {
@@ -63,10 +105,16 @@ class RoomManager {
       },
     });
 
+    // Incremental Stats tracking
+    this.statsTotalUsers++;
+    if (room.users.size === 1) {
+      this.activeRoomIds.add(roomCode);
+    }
+
     return { success: true, room };
   }
 
-  leaveRoom(roomCode, userId) {
+  leaveRoom(roomCode: string, userId: string) {
     const room = this.rooms.get(roomCode);
 
     if (!room) {
@@ -79,34 +127,36 @@ class RoomManager {
     }
 
     room.users.delete(userId);
+    this.statsTotalUsers = Math.max(0, this.statsTotalUsers - 1);
 
-    // If room is empty, delete it
+    // If room is empty, delete it immediately or mark inactive
     if (room.users.size === 0) {
       this.rooms.delete(roomCode);
+      this.activeRoomIds.delete(roomCode);
       return { success: true, roomDeleted: true };
     }
 
-    // If owner left, assign new owner
+    // If owner left, assign new owner to the first available user
     if (user.isOwner && room.users.size > 0) {
       const newOwner = room.users.values().next().value;
-      newOwner.isOwner = true;
+      if (newOwner) newOwner.isOwner = true;
     }
 
     return { success: true, room };
   }
 
-  getRoom(roomCode) {
+  getRoom(roomCode: string): Room | undefined {
     return this.rooms.get(roomCode);
   }
 
-  getRoomUsers(roomCode) {
+  getRoomUsers(roomCode: string): User[] {
     const room = this.rooms.get(roomCode);
     if (!room) return [];
 
     return Array.from(room.users.values());
   }
 
-  addElement(roomCode, element) {
+  addElement(roomCode: string, element: any) {
     const room = this.rooms.get(roomCode);
     if (!room) return false;
 
@@ -119,7 +169,7 @@ class RoomManager {
     return true;
   }
 
-  clearRoom(roomCode) {
+  clearRoom(roomCode: string) {
     const room = this.rooms.get(roomCode);
     if (!room) return false;
 
@@ -127,7 +177,7 @@ class RoomManager {
     return true;
   }
 
-  undoLastElement(roomCode) {
+  undoLastElement(roomCode: string) {
     const room = this.rooms.get(roomCode);
     if (!room || room.elements.length === 0) return false;
 
@@ -135,43 +185,34 @@ class RoomManager {
     return true;
   }
 
-  getRoomElements(roomCode) {
+  getRoomElements(roomCode: string): RoomElement[] {
     const room = this.rooms.get(roomCode);
     return room ? room.elements : [];
   }
 
-  // Cleanup inactive rooms (older than 24 hours with no users)
   cleanup() {
     const now = new Date();
     const maxAge = 24 * 60 * 60 * 1000; // 24 hours
 
     for (const [roomCode, room] of this.rooms.entries()) {
-      if (room.users.size === 0 && now - room.createdAt > maxAge) {
+      if (room.users.size === 0 && (now.getTime() - room.createdAt.getTime()) > maxAge) {
         this.rooms.delete(roomCode);
+        this.activeRoomIds.delete(roomCode);
         console.log(`Cleaned up inactive room: ${roomCode}`);
       }
     }
   }
 
+  // Highly optimized O(1) stats retrieval
   getStats() {
-    const totalRooms = this.rooms.size;
-    const totalUsers = Array.from(this.rooms.values()).reduce(
-      (sum, room) => sum + room.users.size,
-      0
-    );
-
     return {
-      totalRooms,
-      totalUsers,
-      activeRooms: Array.from(this.rooms.values()).filter(
-        (room) => room.users.size > 0
-      ).length,
+      totalRooms: this.rooms.size,
+      totalUsers: this.statsTotalUsers,
+      activeRooms: this.activeRoomIds.size,
     };
   }
 
-  // Add these methods to your RoomManager class
-
-  updateUserVoiceStatus(roomCode, userId, voiceStatus) {
+  updateUserVoiceStatus(roomCode: string, userId: string, voiceStatus: Partial<VoiceStatus>) {
     const room = this.rooms.get(roomCode);
     if (!room) {
       return { success: false, error: "Room not found" };
@@ -192,7 +233,7 @@ class RoomManager {
     return { success: true, user };
   }
 
-  getUsersWithVoiceStatus(roomCode) {
+  getUsersWithVoiceStatus(roomCode: string) {
     const room = this.rooms.get(roomCode);
     if (!room) return [];
 
@@ -206,12 +247,6 @@ class RoomManager {
       },
     }));
   }
-
-  // Update the existing createRoom method to include voice status
-  
-
-  // Update the existing joinRoom method to include voice status
-  
 }
 
-module.exports = RoomManager;
+export default RoomManager;

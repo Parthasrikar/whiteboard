@@ -13,12 +13,18 @@ export const socketEvents = {
   DRAW: 'draw',
   DRAW_END: 'draw-end',
   ELEMENT_ADDED: 'element-added',
+  CURSOR_MOVE: 'cursor-move',
+  
   
   // Canvas events
   CLEAR_CANVAS: 'clear-canvas',
   CANVAS_CLEARED: 'canvas-cleared',
   UNDO: 'undo',
   CANVAS_UPDATED: 'canvas-updated',
+  
+  // Chat events
+  SEND_MESSAGE: 'send-message',
+  RECEIVE_MESSAGE: 'receive-message',
   
   // Actions
   CREATE_ROOM: 'create-room',
@@ -30,81 +36,76 @@ export class SocketEventHandler {
   constructor(socket, callbacks = {}) {
     this.socket = socket;
     this.callbacks = callbacks;
+    // Store named handlers so we can remove only our own listeners on cleanup
+    this._handlers = {};
     this.setupEventListeners();
+  }
+
+  _on(event, fn) {
+    if (!this._handlers[event]) this._handlers[event] = [];
+    this._handlers[event].push(fn);
+    this.socket.on(event, fn);
   }
 
   setupEventListeners() {
     if (!this.socket) return;
 
     // Room events
-    this.socket.on(socketEvents.ROOM_CREATED, (data) => {
-      console.log('Room created:', data);
+    this._on(socketEvents.ROOM_CREATED, (data) => {
       this.callbacks.onRoomCreated?.(data);
     });
-
-    this.socket.on(socketEvents.ROOM_JOINED, (data) => {
-      console.log('Room joined:', data);
+    this._on(socketEvents.ROOM_JOINED, (data) => {
       this.callbacks.onRoomJoined?.(data);
     });
-
-    this.socket.on(socketEvents.ROOM_LEFT, () => {
-      console.log('Room left');
+    this._on(socketEvents.ROOM_LEFT, () => {
       this.callbacks.onRoomLeft?.();
     });
-
-    this.socket.on(socketEvents.ROOM_ERROR, (data) => {
-      console.error('Room error:', data);
+    this._on(socketEvents.ROOM_ERROR, (data) => {
       this.callbacks.onRoomError?.(data);
     });
-
-    this.socket.on(socketEvents.USER_JOINED, (data) => {
-      console.log('User joined:', data);
+    this._on(socketEvents.USER_JOINED, (data) => {
       this.callbacks.onUserJoined?.(data);
     });
-
-    this.socket.on(socketEvents.USER_LEFT, (data) => {
-      console.log('User left:', data);
+    this._on(socketEvents.USER_LEFT, (data) => {
       this.callbacks.onUserLeft?.(data);
     });
 
     // Drawing events
-    this.socket.on(socketEvents.DRAW_START, (data) => {
+    this._on(socketEvents.DRAW_START, (data) => {
       this.callbacks.onDrawStart?.(data);
     });
-
-    this.socket.on(socketEvents.DRAW, (data) => {
+    this._on(socketEvents.DRAW, (data) => {
       this.callbacks.onDraw?.(data);
     });
-
-    this.socket.on(socketEvents.ELEMENT_ADDED, (data) => {
-      console.log('Element added:', data);
+    this._on(socketEvents.ELEMENT_ADDED, (data) => {
       this.callbacks.onElementAdded?.(data);
+    });
+    this._on(socketEvents.CURSOR_MOVE, (data) => {
+      this.callbacks.onCursorMove?.(data);
+    });
+
+    // Chat events — critical: must survive re-renders
+    this._on(socketEvents.RECEIVE_MESSAGE, (data) => {
+      console.log('[Chat] receive-message fired:', data);
+      this.callbacks.onReceiveMessage?.(data);
     });
 
     // Canvas events
-    this.socket.on(socketEvents.CANVAS_CLEARED, (data) => {
-      console.log('Canvas cleared by:', data.userName);
+    this._on(socketEvents.CANVAS_CLEARED, (data) => {
       this.callbacks.onCanvasCleared?.(data);
     });
-
-    this.socket.on(socketEvents.CANVAS_UPDATED, (data) => {
-      console.log('Canvas updated:', data);
+    this._on(socketEvents.CANVAS_UPDATED, (data) => {
       this.callbacks.onCanvasUpdated?.(data);
     });
 
     // Connection events
-    this.socket.on('connect', () => {
-      console.log('Connected to server');
+    this._on('connect', () => {
       this.callbacks.onConnect?.();
     });
-
-    this.socket.on('disconnect', () => {
-      console.log('Disconnected from server');
+    this._on('disconnect', () => {
       this.callbacks.onDisconnect?.();
     });
-
-    this.socket.on('connect_error', (error) => {
-      console.error('Connection error:', error);
+    this._on('connect_error', (error) => {
       this.callbacks.onConnectionError?.(error);
     });
   }
@@ -134,6 +135,15 @@ export class SocketEventHandler {
     this.socket?.emit(socketEvents.DRAW_END, { element });
   }
 
+  emitCursorMove(data) {
+    this.socket?.emit(socketEvents.CURSOR_MOVE, data);
+  }
+
+  sendMessage(text, userName) {
+    console.log('[Chat] emitting send-message:', { text, userName });
+    this.socket?.emit(socketEvents.SEND_MESSAGE, { text, userName });
+  }
+
   clearCanvas() {
     this.socket?.emit(socketEvents.CLEAR_CANVAS);
   }
@@ -142,10 +152,13 @@ export class SocketEventHandler {
     this.socket?.emit(socketEvents.UNDO);
   }
 
+  // Only remove THIS handler's own listeners — do NOT call removeAllListeners()
   cleanup() {
-    if (this.socket) {
-      this.socket.removeAllListeners();
-    }
+    if (!this.socket) return;
+    Object.entries(this._handlers).forEach(([event, fns]) => {
+      fns.forEach(fn => this.socket.off(event, fn));
+    });
+    this._handlers = {};
   }
 }
 

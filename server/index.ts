@@ -1,22 +1,23 @@
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-const cors = require('cors');
-const { v4: uuidv4 } = require('uuid');
-const RoomManager = require('./roomManager');
+import express, { Request, Response } from 'express';
+import http from 'http';
+import { Server, Socket } from 'socket.io';
+import cors from 'cors';
+import RoomManager, { RoomElement } from './roomManager';
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIo(server, {
+
+const io = new Server(server, {
   cors: {
-  origin: [
-    "https://whiteboard-frontend-2e8f.onrender.com",
-    "https://your-production-domain.com",
-    "http://localhost:5173/"
-  ],
-  methods: ["GET", "POST"],
-  credentials: true
-}
+    origin: [
+      "https://whiteboard-frontend-2e8f.onrender.com",
+      "https://your-production-domain.com",
+      "http://localhost:5173",
+      "http://127.0.0.1:5173"
+    ],
+    methods: ["GET", "POST"],
+    credentials: true
+  }
 });
 
 // Middleware
@@ -26,8 +27,14 @@ app.use(express.json());
 // Initialize room manager
 const roomManager = new RoomManager();
 
+// Extend Socket interface correctly without relying on @types/socket.io module declarations
+interface AppSocket extends Socket {
+  currentRoom?: string;
+  userName?: string;
+}
+
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/health', (req: Request, res: Response) => {
   const stats = roomManager.getStats();
   res.json({
     status: 'healthy',
@@ -37,11 +44,12 @@ app.get('/health', (req, res) => {
 });
 
 // Socket.IO connection handling
-io.on('connection', (socket) => {
+io.on('connection', (baseSocket: Socket) => {
+  const socket = baseSocket as AppSocket;
   console.log(`User connected: ${socket.id}`);
 
   // Join a room
-  socket.on('join-room', async (data) => {
+  socket.on('join-room', (data: { roomCode: string, userName: string }) => {
     try {
       const { roomCode, userName } = data;
       const userId = socket.id;
@@ -90,7 +98,7 @@ io.on('connection', (socket) => {
   });
 
   // Create a room
-  socket.on('create-room', async (data) => {
+  socket.on('create-room', (data: { roomCode: string, userName: string }) => {
     try {
       const { roomCode, userName } = data;
       const userId = socket.id;
@@ -124,9 +132,9 @@ io.on('connection', (socket) => {
   });
 
   // Leave room
-  socket.on('leave-room', (data) => {
+  socket.on('leave-room', (data: { roomCode?: string }) => {
     try {
-      const { roomCode } = data;
+      const roomCode = data.roomCode;
       const userId = socket.id;
 
       if (socket.currentRoom) {
@@ -144,11 +152,12 @@ io.on('connection', (socket) => {
 
           // Leave socket room
           socket.leave(socket.currentRoom);
-          socket.currentRoom = null;
-          socket.userName = null;
+          
+          console.log(`User ${userId} left room ${roomCode || socket.currentRoom}`);
+          socket.currentRoom = undefined;
+          socket.userName = undefined;
 
           socket.emit('room-left');
-          console.log(`User ${userId} left room ${roomCode || socket.currentRoom}`);
         }
       }
     } catch (error) {
@@ -157,7 +166,7 @@ io.on('connection', (socket) => {
   });
 
   // Drawing events
-  socket.on('draw-start', (data) => {
+  socket.on('draw-start', (data: any) => {
     if (!socket.currentRoom) return;
     
     socket.to(socket.currentRoom).emit('draw-start', {
@@ -167,7 +176,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('draw', (data) => {
+  socket.on('draw', (data: any) => {
     if (!socket.currentRoom) return;
     
     socket.to(socket.currentRoom).emit('draw', {
@@ -177,7 +186,32 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('draw-end', (data) => {
+  socket.on('cursor-move', (data: any) => {
+    if (!socket.currentRoom) return;
+    
+    socket.to(socket.currentRoom).emit('cursor-move', {
+      ...data,
+      userId: socket.id,
+      userName: socket.userName
+    });
+  });
+
+  socket.on('send-message', (data: { text: string }) => {
+    if (!socket.currentRoom) return;
+    
+    const messagePayload = {
+      id: Date.now().toString() + Math.random().toString(36).substring(2, 6),
+      text: data.text,
+      userId: socket.id,
+      userName: socket.userName,
+      timestamp: Date.now()
+    };
+    
+    socket.to(socket.currentRoom).emit('receive-message', messagePayload);
+    socket.emit('receive-message', messagePayload);
+  });
+
+  socket.on('draw-end', (data: { element: RoomElement }) => {
     if (!socket.currentRoom) return;
 
     const { element } = data;
@@ -196,7 +230,7 @@ io.on('connection', (socket) => {
   });
 
   // Clear canvas
-  socket.on('clear-canvas', (data) => {
+  socket.on('clear-canvas', () => {
     if (!socket.currentRoom) return;
 
     const success = roomManager.clearRoom(socket.currentRoom);
@@ -210,7 +244,7 @@ io.on('connection', (socket) => {
   });
 
   // Undo last action
-  socket.on('undo', (data) => {
+  socket.on('undo', () => {
     if (!socket.currentRoom) return;
 
     const success = roomManager.undoLastElement(socket.currentRoom);
@@ -227,118 +261,100 @@ io.on('connection', (socket) => {
   });
 
   // Voice chat signaling events
-  socket.on('voice-offer', (data) => {
-  if (!socket.currentRoom) return;
-  
-  const { targetUserId, offer } = data;
-  
-  // Send offer to specific user
-  socket.to(targetUserId).emit('voice-offer', {
-    fromUserId: socket.id,
-    fromUserName: socket.userName,
-    offer
-  });
-  
-  console.log(`Voice offer from ${socket.id} to ${targetUserId}`);
-});
-
-  socket.on('voice-answer', (data) => {
-  if (!socket.currentRoom) return;
-  
-  const { targetUserId, answer } = data;
-  
-  // Send answer to specific user
-  socket.to(targetUserId).emit('voice-answer', {
-    fromUserId: socket.id,
-    fromUserName: socket.userName,
-    answer
-  });
-  
-  console.log(`Voice answer from ${socket.id} to ${targetUserId}`);
-});
-
-  socket.on('voice-ice-candidate', (data) => {
-  if (!socket.currentRoom) return;
-  
-  const { targetUserId, candidate } = data;
-  
-  // Send ICE candidate to specific user
-  socket.to(targetUserId).emit('voice-ice-candidate', {
-    fromUserId: socket.id,
-    fromUserName: socket.userName,
-    candidate
-  });
-});
-
-  socket.on('voice-toggle', (data) => {
-  if (!socket.currentRoom) return;
-  
-  const { isMuted } = data;
-  
-  // Update user's voice status in room
-  const result = roomManager.updateUserVoiceStatus(socket.currentRoom, socket.id, { isMuted });
-  
-  if (result.success) {
-    // Notify all users in room about voice status change
-    socket.to(socket.currentRoom).emit('user-voice-status', {
-      userId: socket.id,
-      userName: socket.userName,
-      isMuted
+  socket.on('voice-offer', (data: { targetUserId: string, offer: any }) => {
+    if (!socket.currentRoom) return;
+    
+    const { targetUserId, offer } = data;
+    
+    socket.to(targetUserId).emit('voice-offer', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName,
+      offer
     });
-  }
-});
+    
+    console.log(`Voice offer from ${socket.id} to ${targetUserId}`);
+  });
 
-  // FIXED: Better voice chat request handling
-socket.on('request-voice-chat', (data) => {
-  if (!socket.currentRoom) return;
-  
-  console.log(`Voice chat requested by ${socket.userName} in room ${socket.currentRoom}`);
-  
-  // Get all users in the room
-  const roomUsers = roomManager.getRoomUsers(socket.currentRoom);
-  const otherUserIds = roomUsers
-    .filter(user => user.id !== socket.id)
-    .map(user => user.id);
-  
-  console.log(`Other users in room:`, otherUserIds);
-  
-  if (otherUserIds.length === 0) {
-    socket.emit('voice-error', { error: 'No other users in room' });
-    return;
-  }
-  
-  // Notify all other users that voice chat is being requested
-  socket.to(socket.currentRoom).emit('voice-chat-requested', {
-    fromUserId: socket.id,
-    fromUserName: socket.userName
+  socket.on('voice-answer', (data: { targetUserId: string, answer: any }) => {
+    if (!socket.currentRoom) return;
+    
+    const { targetUserId, answer } = data;
+    
+    socket.to(targetUserId).emit('voice-answer', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName,
+      answer
+    });
+    
+    console.log(`Voice answer from ${socket.id} to ${targetUserId}`);
   });
-  
-  // For simplicity, auto-accept and start voice chat immediately
-  // Send the user list back to the requester to initiate peer connections
-  socket.emit('voice-chat-started', {
-    userIds: otherUserIds
-  });
-  
-  // Also notify other users to start voice chat
-  socket.to(socket.currentRoom).emit('voice-chat-started', {
-    userIds: [socket.id]
-  });
-});
 
-  socket.on('voice-chat-response', (data) => {
-  if (!socket.currentRoom) return;
-  
-  const { accepted, targetUserId } = data;
-  
-  // Send response to the requesting user
-  socket.to(targetUserId).emit('voice-chat-response', {
-    fromUserId: socket.id,
-    fromUserName: socket.userName,
-    accepted
+  socket.on('voice-ice-candidate', (data: { targetUserId: string, candidate: any }) => {
+    if (!socket.currentRoom) return;
+    
+    const { targetUserId, candidate } = data;
+    
+    socket.to(targetUserId).emit('voice-ice-candidate', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName,
+      candidate
+    });
   });
-  
-  console.log(`Voice chat response from ${socket.userName}: ${accepted ? 'accepted' : 'rejected'}`);
-});
+
+  socket.on('voice-toggle', (data: { isMuted: boolean }) => {
+    if (!socket.currentRoom) return;
+    
+    const { isMuted } = data;
+    
+    const result = roomManager.updateUserVoiceStatus(socket.currentRoom, socket.id, { isMuted });
+    
+    if (result.success) {
+      socket.to(socket.currentRoom).emit('user-voice-status', {
+        userId: socket.id,
+        userName: socket.userName,
+        isMuted
+      });
+    }
+  });
+
+  socket.on('request-voice-chat', () => {
+    if (!socket.currentRoom) return;
+    
+    const roomUsers = roomManager.getRoomUsers(socket.currentRoom);
+    const otherUserIds = roomUsers
+      .filter(user => user.id !== socket.id)
+      .map(user => user.id);
+    
+    if (otherUserIds.length === 0) {
+      socket.emit('voice-error', { error: 'No other users in room' });
+      return;
+    }
+    
+    socket.to(socket.currentRoom).emit('voice-chat-requested', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName
+    });
+    
+    socket.emit('voice-chat-started', {
+      userIds: otherUserIds
+    });
+    
+    socket.to(socket.currentRoom).emit('voice-chat-started', {
+      userIds: [socket.id]
+    });
+  });
+
+  socket.on('voice-chat-response', (data: { accepted: boolean, targetUserId: string }) => {
+    if (!socket.currentRoom) return;
+    
+    const { accepted, targetUserId } = data;
+    
+    socket.to(targetUserId).emit('voice-chat-response', {
+      fromUserId: socket.id,
+      fromUserName: socket.userName,
+      accepted
+    });
+  });
 
   // Handle disconnection
   socket.on('disconnect', () => {
@@ -382,5 +398,5 @@ process.on('uncaughtException', (error) => {
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`🚀 Whiteboard server running on port ${PORT}`);
-  console.log(`📊 Health check available at https://whiteboard-backend-vwnp.onrender.com:${PORT}/health`);
+  console.log(`📊 Health check available at http://localhost:${PORT}/health`);
 });

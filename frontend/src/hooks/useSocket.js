@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io } from 'socket.io-client';
 
-export const useSocket = (serverUrl = 'https://whiteboard-backend-vwnp.onrender.com') => {
+const DEFAULT_SERVER_URL = import.meta.env.DEV
+  ? 'http://localhost:5000'
+  : 'https://whiteboard-backend-vwnp.onrender.com';
+
+export const useSocket = (serverUrl = DEFAULT_SERVER_URL) => {
   const socketRef = useRef(null);
   const [isConnected, setIsConnected] = useState(false);
   const [connectionError, setConnectionError] = useState(null);
