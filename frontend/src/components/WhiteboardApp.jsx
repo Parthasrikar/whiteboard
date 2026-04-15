@@ -33,6 +33,7 @@ const WhiteboardApp = () => {
   const [tool, setTool] = useState("pen");
   const [color, setColor] = useState("#000000");
   const [brushSize, setBrushSize] = useState(2);
+  const [fontSize, setFontSize] = useState(18);
   const [currentPath, setCurrentPath] = useState([]);
   const [startPoint, setStartPoint] = useState(null);
   const [elements, setElements] = useState([]);
@@ -362,6 +363,39 @@ const WhiteboardApp = () => {
     socketEventHandler?.undo();
   };
 
+  // Ctrl+Z / Cmd+Z keyboard shortcut for undo
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Don't undo if user is typing in a textarea or input
+      const target = e.target;
+      if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undoLastAction();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [elements, socketEventHandler]);
+
+  // Text tool handler
+  const handleTextCommit = useCallback((text, x, y) => {
+    const newElement = {
+      id: Date.now(),
+      type: 'text',
+      text,
+      x,
+      y,
+      color,
+      fontSize,
+    };
+    setElements(prev => [...prev, newElement]);
+    socketEventHandler?.endDrawing(newElement);
+  }, [color, fontSize, socketEventHandler]);
+
   const clearCanvas = () => {
     setElements([]);
     setCurrentPath([]);
@@ -478,6 +512,8 @@ const WhiteboardApp = () => {
           toggleMute={toggleMute}
           messages={messages}
           sendMessage={(text) => socketEventHandler?.sendMessage(text, formatUserName(userName))}
+          fontSize={fontSize}
+          setFontSize={setFontSize}
         />
         
         {/* Canvas takes the remaining space */}
@@ -487,12 +523,14 @@ const WhiteboardApp = () => {
           tool={tool}
           color={color}
           brushSize={brushSize}
+          fontSize={fontSize}
           startPoint={startPoint}
           isDrawing={isDrawing}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseLeave}
+          onTextCommit={handleTextCommit}
           remoteCursors={remoteCursors}
           remoteDrawings={remoteDrawings}
         />

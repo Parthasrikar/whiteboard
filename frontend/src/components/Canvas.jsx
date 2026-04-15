@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState } from 'react';
 import rough from 'roughjs';
-import { ZoomIn, ZoomOut, Focus } from 'lucide-react';
+import { ZoomIn, ZoomOut } from 'lucide-react';
 
 const Canvas = ({ 
   elements, 
@@ -8,17 +8,24 @@ const Canvas = ({
   tool, 
   color, 
   brushSize, 
+  fontSize = 18,
   startPoint,
   isDrawing,
   onMouseDown, 
   onMouseMove, 
   onMouseUp, 
   onMouseLeave,
+  onTextCommit,
   remoteCursors = {},
   remoteDrawings = {}
 }) => {
+  // Text tool overlay state
+  const [activeText, setActiveText] = useState(null); // { screenX, screenY, worldX, worldY, value }
+  const activeTextRef = useRef(null);  // mirror of activeText for use in callbacks
+  const textCommittedRef = useRef(false); // guard against double-fire from blur after Enter
   const canvasRef = useRef(null);
   const roughCanvasRef = useRef(null);
+  const textareaRef = useRef(null);
   const lastPanPoint = useRef({ x: 0, y: 0 });
 
   // Camera state for infinite canvas
@@ -102,10 +109,36 @@ const Canvas = ({
     setCamera({ x: 0, y: 0, zoom: 1 });
   };
 
+  // Commit any active text input — called directly, NOT inside a state updater
+  const commitText = (value) => {
+    if (textCommittedRef.current) return;
+    textCommittedRef.current = true;
+
+    const pos = activeTextRef.current;
+    if (pos && value && value.trim()) {
+      onTextCommit?.(value.trim(), pos.worldX, pos.worldY);
+    }
+    setActiveText(null);
+    activeTextRef.current = null;
+  };
+
+  // NEW: Ensure textarea is focused when it appears
+  useEffect(() => {
+    if (activeText && textareaRef.current) {
+      textareaRef.current.focus();
+      // Move cursor to end
+      const val = textareaRef.current.value;
+      textareaRef.current.setSelectionRange(val.length, val.length);
+    }
+  }, [activeText]);
+
   // Wrap the original mouse event handlers to fix coordinates and intercept panning
   const handleMouseDown = (e) => {
+    // Commit any pending text first
+    if (activeText) return;
+
     // Intercept panning (middle click, right click, or pan tool)
-    if (e.button === 1 || e.button === 2 || tool === "pan") {
+    if (e.button === 1 || e.button === 2 || tool === 'pan') {
       setIsPanning(true);
       lastPanPoint.current = { x: e.clientX, y: e.clientY };
       return;
@@ -113,6 +146,39 @@ const Canvas = ({
 
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    // Text tool: place an input overlay, don't start a stroke
+    if (tool === 'text') {
+      const rect = canvas.getBoundingClientRect();
+      const pos = getMousePos(canvas, e.clientX, e.clientY);
+      
+      // Calculate screen coordinates and clamp to ensure box stays visible
+      let screenX = e.clientX - rect.left;
+      let screenY = e.clientY - rect.top;
+      
+      // Ensure box doesn't go off right/bottom edges (box is roughly 220x150)
+      const boxW = 240;
+      const boxH = 160;
+      
+      if (screenX + boxW > rect.width) screenX = rect.width - boxW - 10;
+      if (screenY + boxH > rect.height) screenY = rect.height - boxH - 10;
+      
+      // Ensure not negative
+      screenX = Math.max(10, screenX);
+      screenY = Math.max(10, screenY);
+
+      const textState = {
+        screenX,
+        screenY,
+        worldX: pos.x,
+        worldY: pos.y,
+        value: ''
+      };
+      textCommittedRef.current = false;
+      activeTextRef.current = textState;
+      setActiveText(textState);
+      return;
+    }
     
     const pos = getMousePos(canvas, e.clientX, e.clientY);
     const syntheticEvent = {
@@ -419,6 +485,48 @@ const Canvas = ({
           ctx.globalCompositeOperation = "source-over";
         }
         break;
+      case "text":
+        if (element.text) {
+          ctx.globalCompositeOperation = "source-over";
+          const fs = element.fontSize || 18;
+          ctx.font = `500 ${fs}px Inter, ui-sans-serif, sans-serif`;
+          ctx.textBaseline = "top";
+
+          const lines = element.text.split('\n');
+          const lineH = fs * 1.5;
+          const pad = fs * 0.5;
+          const maxW = Math.max(...lines.map(l => ctx.measureText(l).width));
+          const boxW = maxW + pad * 2;
+          const boxH = lines.length * lineH + pad * 2;
+
+          // Draw subtle filled background
+          const radius = fs * 0.4;
+          ctx.fillStyle = 'rgba(255,255,255,0.92)';
+          ctx.beginPath();
+          ctx.moveTo(element.x - pad + radius, element.y - pad);
+          ctx.lineTo(element.x - pad + boxW - radius, element.y - pad);
+          ctx.arcTo(element.x - pad + boxW, element.y - pad, element.x - pad + boxW, element.y - pad + radius, radius);
+          ctx.lineTo(element.x - pad + boxW, element.y - pad + boxH - radius);
+          ctx.arcTo(element.x - pad + boxW, element.y - pad + boxH, element.x - pad + boxW - radius, element.y - pad + boxH, radius);
+          ctx.lineTo(element.x - pad + radius, element.y - pad + boxH);
+          ctx.arcTo(element.x - pad, element.y - pad + boxH, element.x - pad, element.y - pad + boxH - radius, radius);
+          ctx.lineTo(element.x - pad, element.y - pad + radius);
+          ctx.arcTo(element.x - pad, element.y - pad, element.x - pad + radius, element.y - pad, radius);
+          ctx.closePath();
+          ctx.fill();
+
+          // Draw border
+          ctx.strokeStyle = element.color || '#000000';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // Draw text on top
+          ctx.fillStyle = element.color || '#000000';
+          lines.forEach((line, i) => {
+            ctx.fillText(line, element.x, element.y + i * lineH);
+          });
+        }
+        break;
     }
   };
 
@@ -455,7 +563,13 @@ const Canvas = ({
 
         <canvas
           ref={canvasRef}
-          className={`w-full h-full block ${tool === 'pan' || isPanning ? 'cursor-grab active:cursor-grabbing' : 'cursor-crosshair'}`}
+          className={`w-full h-full block ${
+            tool === 'pan' || isPanning
+              ? 'cursor-grab active:cursor-grabbing'
+              : tool === 'text'
+              ? 'cursor-text'
+              : 'cursor-crosshair'
+          }`}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={interceptMouseUp}
@@ -464,6 +578,100 @@ const Canvas = ({
           onContextMenu={(e) => e.preventDefault()}
           style={{ touchAction: 'none' }}
         />
+
+        {activeText ? (
+          <div
+            className="absolute z-[100] flex flex-col shadow-2xl pointer-events-auto animate-in fade-in zoom-in duration-200"
+            style={{
+              left: activeText.screenX,
+              top: activeText.screenY,
+              minWidth: 260,
+              minHeight: 120,
+              border: `1px solid ${color}44`,
+              borderRadius: 16,
+              overflow: 'hidden',
+              background: 'rgba(255, 255, 255, 0.95)',
+              backdropFilter: 'blur(10px)',
+              boxShadow: `0 24px 48px -12px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.05)`,
+              transform: 'translate(-4px, -4px)' 
+            }}
+          >
+            {/* Context Header */}
+            <div
+              className="flex items-center justify-between px-4 py-2 select-none border-b border-gray-100"
+              style={{ background: `${color}08` }}
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">New Text</span>
+              </div>
+              <span className="text-[9px] text-gray-400 font-bold uppercase tracking-tighter italic">Enter to stamp</span>
+            </div>
+
+            {/* Editable area */}
+            <div className="flex-1 flex flex-col p-1">
+              <textarea
+                ref={textareaRef}
+                autoFocus
+                value={activeText.value}
+                onChange={e => {
+                  const updated = { ...activeText, value: e.target.value };
+                  activeTextRef.current = updated;
+                  setActiveText(updated);
+                }}
+                onBlur={() => {
+                  // Keep box open until explicit action
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Escape') {
+                    textCommittedRef.current = true;
+                    setActiveText(null);
+                    activeTextRef.current = null;
+                  } else if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    commitText(activeText.value);
+                  }
+                  e.stopPropagation();
+                }}
+                placeholder="Start typing..."
+                className="flex-1 outline-none resize-none bg-transparent px-3 py-2 w-full text-gray-800"
+                style={{
+                  fontSize: `${Math.max(14, (fontSize || 18) * camera.zoom)}px`,
+                  fontFamily: 'Inter, ui-sans-serif, sans-serif',
+                  fontWeight: 500,
+                  lineHeight: 1.5,
+                  caretColor: color,
+                }}
+                rows={3}
+              />
+              
+              <div className="flex justify-end gap-2 p-2 bg-white/50 border-t border-gray-100/50">
+                <button 
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setActiveText(null);
+                    activeTextRef.current = null;
+                  }}
+                  className="px-4 py-2 rounded-xl text-gray-400 text-[11px] font-bold uppercase hover:bg-gray-100 hover:text-gray-600 transition-all active:scale-95"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    commitText(activeText.value);
+                  }}
+                  className="px-5 py-2 rounded-xl text-white text-[11px] font-black uppercase tracking-wider hover:opacity-90 active:scale-95 transition-all shadow-md"
+                  style={{ backgroundColor: color }}
+                >
+                  Stamp
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
         
         {/* Render Live Cursors Overlay */}
         {Object.entries(remoteCursors).map(([userId, cursor]) => {

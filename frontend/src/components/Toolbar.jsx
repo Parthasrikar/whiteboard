@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Palette, 
   Eraser, 
-  Pen, 
+  Pen,
+  Type, 
   Circle, 
   Square, 
   Minus,
@@ -44,7 +45,9 @@ const Toolbar = ({
   stopVoiceChat,
   toggleMute,
   messages = [],
-  sendMessage
+  sendMessage,
+  fontSize,
+  setFontSize
 }) => {
   const colorPresets = [
     "#000000", "#FF0000", "#00FF00", "#0000FF", 
@@ -58,6 +61,7 @@ const Toolbar = ({
 
   const mainTools = [
     { id: 'pen', icon: Pen, label: 'Pen' },
+    { id: 'text', icon: Type, label: 'Text' },
     { id: 'pan', icon: Hand, label: 'Pan' },
     { id: 'eraser', icon: Eraser, label: 'Eraser' }
   ];
@@ -212,21 +216,31 @@ const Toolbar = ({
       <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-none">
         
         {/* Settings Popover (Stroke & Color) */}
-        {['pen', 'rectangle', 'circle', 'line'].includes(tool) && (
+        {['pen', 'text', 'rectangle', 'circle', 'triangle', 'diamond', 'hexagon', 'line'].includes(tool) && (
           <div className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-200/60 p-3 mb-3 pointer-events-auto flex items-center gap-5 mx-auto w-max transition-all">
             
-            {/* dynamic stroke size */}
-            <div className="flex items-center gap-3">
-              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">Size</span>
-              <input
-                type="range"
-                min="1"
-                max="20"
-                value={brushSize}
-                onChange={(e) => setBrushSize(parseInt(e.target.value))}
-                className="w-24 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-              />
-              <span className="text-[10px] font-mono text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">{brushSize}px</span>
+            {/* dynamic stroke and font size based on tool */}
+            <div className="flex items-center gap-5">
+              <div className="flex items-center gap-3">
+                <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                  {tool === 'text' ? 'Font' : 'Size'}
+                </span>
+                <input
+                  type="range"
+                  min={tool === 'text' ? "12" : "1"}
+                  max={tool === 'text' ? "72" : "20"}
+                  value={tool === 'text' ? fontSize : brushSize}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value);
+                    if (tool === 'text') setFontSize(val);
+                    else setBrushSize(val);
+                  }}
+                  className="w-24 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                />
+                <span className="text-[10px] font-mono text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
+                  {tool === 'text' ? fontSize : brushSize}px
+                </span>
+              </div>
             </div>
 
             <div className="w-px h-6 bg-gray-200" />
