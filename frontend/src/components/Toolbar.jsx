@@ -79,12 +79,19 @@ const Toolbar = ({
   const [showShapesMenu, setShowShapesMenu] = useState(false);
   const [commTab, setCommTab] = useState('chat'); // 'voice' or 'chat'
   const [chatInput, setChatInput] = useState('');
+  const [lastReadMessageCount, setLastReadMessageCount] = useState(0);
   const chatScrollRef = useRef(null);
+
+  // Track unread messages
+  const unreadMessageCount = messages.length - lastReadMessageCount;
+  const hasUnreadMessages = unreadMessageCount > 0 && commTab !== 'chat';
 
   // Auto-scroll chat
   useEffect(() => {
     if (commTab === 'chat' && chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+      // Mark messages as read when viewing chat
+      setLastReadMessageCount(messages.length);
     }
   }, [messages, commTab]);
 
@@ -111,9 +118,12 @@ const Toolbar = ({
             <div className="flex border-b border-gray-100 bg-gray-50/50">
               <button 
                 onClick={() => setCommTab('chat')} 
-                className={`flex-1 py-2.5 text-[10px] font-bold uppercase tracking-widest transition-colors ${commTab === 'chat' ? 'text-indigo-600 border-b-2 border-indigo-600 bg-white' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
+                className={`flex-1 py-2.5 text-[10px] font-bold uppercase tracking-widest transition-colors relative ${commTab === 'chat' ? 'text-indigo-600 border-b-2 border-indigo-600 bg-white' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
               >
                 Team Chat
+                {hasUnreadMessages && commTab !== 'chat' && (
+                  <span className="absolute top-1.5 right-2 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                )}
               </button>
               <button 
                 onClick={() => setCommTab('voice')} 
@@ -191,12 +201,20 @@ const Toolbar = ({
         ) : (
           <button 
              onClick={() => setShowCommPanel(true)}
-             className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-200/60 p-3 pointer-events-auto flex items-center gap-3 hover:bg-gray-50 transition-colors group filter active:brightness-95"
+             className="bg-white/95 backdrop-blur-xl rounded-2xl shadow-lg border border-gray-200/60 p-3 pointer-events-auto flex items-center gap-3 hover:bg-gray-50 transition-colors group filter active:brightness-95 relative"
           >
+             {/* Notification Badge - Outer Badge on Button */}
+             {hasUnreadMessages && (
+               <span className="absolute -top-2 -right-2 w-3 h-3 bg-red-500 rounded-full border-2 border-white animate-pulse shadow-lg"></span>
+             )}
+             
              <div className="relative">
                <MessageSquare className="w-5 h-5 text-gray-500 group-hover:text-indigo-600 transition-colors" />
-               {isVoiceChatActive && (
+               {isVoiceChatActive && !hasUnreadMessages && (
                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-white"></span>
+               )}
+               {isVoiceChatActive && hasUnreadMessages && (
+                 <span className="absolute -bottom-1 -right-1 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-white"></span>
                )}
              </div>
              <div className="flex flex-col items-start leading-none gap-1">

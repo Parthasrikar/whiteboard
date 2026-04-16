@@ -121,19 +121,18 @@ export const useVoiceChat = (socket, roomCode, userName) => {
     }
   }, []);
 
-  // Update peer connection status
-  const updatePeerStatus = useCallback((userId, updates) => {
+  // Update peer connection status - SIMPLIFIED
+  const updatePeerStatus = useCallback((userId, connected, muted) => {
     setConnectedPeers((prev) => {
       const newPeers = new Map(prev);
-      const currentStatus = newPeers.get(userId) || {
-        connected: false,
-        muted: true,
-      };
-      newPeers.set(userId, { ...currentStatus, ...updates });
-      console.log(`👥 Updated peer ${userId} status:`, {
-        ...currentStatus,
-        ...updates,
-      });
+      const currentStatus = newPeers.get(userId) || { connected: false, muted: true };
+      
+      // Only update if values actually changed
+      if (connected !== undefined) currentStatus.connected = connected;
+      if (muted !== undefined) currentStatus.muted = muted;
+      
+      newPeers.set(userId, currentStatus);
+      console.log(`👥 Updated peer ${userId}:`, { connected: currentStatus.connected, muted: currentStatus.muted });
       return newPeers;
     });
   }, []);
@@ -176,7 +175,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         const [remoteStream] = event.streams;
         if (remoteStream) {
           playRemoteAudio(userId, remoteStream);
-          updatePeerStatus(userId, { connected: true });
+          updatePeerStatus(userId, true);
         }
       };
 
@@ -193,7 +192,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         }
       };
 
-      // Handle connection state changes - IMPROVED
+      // Handle connection state changes - SIMPLIFIED
       peerConnection.onconnectionstatechange = () => {
         const state = peerConnection.connectionState;
         console.log(`🔄 Peer connection state with ${userId}:`, state);
@@ -207,32 +206,14 @@ export const useVoiceChat = (socket, roomCode, userName) => {
 
         switch (state) {
           case "connected":
-            updatePeerStatus(userId, { connected: true });
+            updatePeerStatus(userId, true);
             console.log(`✅ Voice connection established with ${userId}`);
-            // Reset reconnection attempts on successful connection
             reconnectAttemptsRef.current.delete(userId);
-            break;
-
-          case "connecting":
-            console.log(`🔄 Connecting to ${userId}...`);
-            // IMPROVED: Shorter timeout for faster recovery
-            const newTimeoutId = setTimeout(() => {
-              console.log(`⏰ Connection timeout for ${userId}`);
-              const attempts = reconnectAttemptsRef.current.get(userId) || 0;
-              if (attempts < 3) {
-                restartConnectionWithUser(userId);
-              } else {
-                console.log(`❌ Max reconnection attempts reached for ${userId}`);
-                closePeerConnection(userId);
-              }
-            }, 15000); // Reduced from 30s to 15s
-            connectionTimeoutsRef.current.set(userId, newTimeoutId);
             break;
 
           case "disconnected":
             console.log(`⚠️ Voice connection disconnected with ${userId}`);
-            updatePeerStatus(userId, { connected: false });
-            // IMPROVED: Smarter reconnection logic
+            updatePeerStatus(userId, false);
             const attempts = reconnectAttemptsRef.current.get(userId) || 0;
             if (isVoiceChatActive && attempts < 3) {
               setTimeout(() => {
@@ -240,13 +221,13 @@ export const useVoiceChat = (socket, roomCode, userName) => {
                   console.log(`🔄 Attempting to reconnect to ${userId} (attempt ${attempts + 1})`);
                   restartConnectionWithUser(userId);
                 }
-              }, Math.min(2000 * Math.pow(2, attempts), 10000)); // Exponential backoff, max 10s
+              }, Math.min(2000 * Math.pow(2, attempts), 10000));
             }
             break;
 
           case "failed":
             console.log(`❌ Voice connection failed with ${userId}`);
-            updatePeerStatus(userId, { connected: false });
+            updatePeerStatus(userId, false);
             const failAttempts = reconnectAttemptsRef.current.get(userId) || 0;
             if (isVoiceChatActive && failAttempts < 3) {
               setTimeout(() => restartConnectionWithUser(userId), 1000);
@@ -257,7 +238,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
 
           case "closed":
             console.log(`🔒 Voice connection closed with ${userId}`);
-            updatePeerStatus(userId, { connected: false });
+            updatePeerStatus(userId, false);
             break;
         }
       };
@@ -269,13 +250,12 @@ export const useVoiceChat = (socket, roomCode, userName) => {
 
         if (iceState === "failed") {
           console.log(`🧊 ICE connection failed with ${userId}, attempting restart`);
-          updatePeerStatus(userId, { connected: false });
-          // Try ICE restart
+          updatePeerStatus(userId, false);
           peerConnection.restartIce();
         } else if (iceState === "disconnected") {
-          updatePeerStatus(userId, { connected: false });
+          updatePeerStatus(userId, false);
         } else if (iceState === "connected" || iceState === "completed") {
-          updatePeerStatus(userId, { connected: true });
+          updatePeerStatus(userId, true);
         }
       };
 
@@ -334,13 +314,11 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         targetUserId: userId,
         offer,
       });
-
-      updatePeerStatus(userId, { connected: false, initiating: true });
     } catch (error) {
       console.error(`❌ Error initiating connection with ${userId}:`, error);
       setVoiceError(`Failed to connect to user: ${error.message}`);
     }
-  }, [socket, createPeerConnection, updatePeerStatus]);
+  }, [socket, createPeerConnection]);
 
   // Play remote audio with better error handling
   const playRemoteAudio = useCallback(
@@ -360,6 +338,15 @@ export const useVoiceChat = (socket, roomCode, userName) => {
 
       // Set the stream
       audioElement.srcObject = stream;
+
+      // Check if user is already muted and apply mute state
+      const peerStatus = connectedPeers.get(userId);
+      if (peerStatus?.muted) {
+        audioElement.muted = true;
+        console.log(`🔇 Setting audio element for ${userId} as muted (peer already muted)`);
+      } else {
+        audioElement.muted = false;
+      }
 
       // Handle audio events
       audioElement.onloadedmetadata = () => {
@@ -381,7 +368,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         playPromise
           .then(() => {
             console.log(`✅ Audio playback started for ${userId}`);
-            updatePeerStatus(userId, { connected: true, audioPlaying: true });
+            updatePeerStatus(userId, true, undefined);
           })
           .catch((error) => {
             console.error(
@@ -399,10 +386,10 @@ export const useVoiceChat = (socket, roomCode, userName) => {
           });
       }
     },
-    [updatePeerStatus]
+    [connectedPeers, updatePeerStatus]
   );
 
-  // Close peer connection with cleanup - IMPROVED
+  // Close peer connection with cleanup - SIMPLIFIED
   const closePeerConnection = useCallback(
     (userId) => {
       console.log(`🔒 Closing peer connection for user: ${userId}`);
@@ -433,7 +420,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
       }
 
       // Update peer status
-      updatePeerStatus(userId, { connected: false, audioPlaying: false });
+      updatePeerStatus(userId, false);
     },
     [updatePeerStatus]
   );
@@ -472,7 +459,6 @@ export const useVoiceChat = (socket, roomCode, userName) => {
           } else {
             console.log(`⏳ Waiting for offer from ${userId} (they will initiate)`);
             createPeerConnection(userId);
-            updatePeerStatus(userId, { connected: false, waiting: true });
           }
         }
       } catch (error) {
@@ -482,7 +468,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         isInitiatingRef.current = false;
       }
     },
-    [shouldInitiateOffer, initiateConnectionWithUser, createPeerConnection, updatePeerStatus]
+    [shouldInitiateOffer, initiateConnectionWithUser, createPeerConnection]
   );
 
   // Start voice chat
@@ -642,7 +628,6 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         });
 
         console.log(`📤 Sent voice answer to: ${fromUserId}`);
-        updatePeerStatus(fromUserId, { connected: false, answering: true });
       } catch (error) {
         console.error("❌ Error handling voice offer:", error);
         setVoiceError("Failed to handle voice offer: " + error.message);
@@ -669,8 +654,6 @@ export const useVoiceChat = (socket, roomCode, userName) => {
           
           // Process any pending ICE candidates
           await processPendingIceCandidates(fromUserId);
-          
-          updatePeerStatus(fromUserId, { answering: false });
         } catch (error) {
           console.error("❌ Error handling voice answer:", error);
           setVoiceError("Failed to handle voice answer: " + error.message);
@@ -745,7 +728,16 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         `🎵 User ${userId} voice status: ${isMuted ? "muted" : "unmuted"}`
       );
 
-      updatePeerStatus(userId, { muted: isMuted });
+      // Update peer status
+      updatePeerStatus(userId, undefined, isMuted);
+
+      // Control audio playback based on mute status
+      const audioElement = audioElementsRef.current.get(userId);
+      if (audioElement) {
+        // When remote user mutes, mute the audio element
+        audioElement.muted = isMuted;
+        console.log(`🔇 Audio element for ${userId} muted: ${isMuted}`);
+      }
     };
 
     const handleVoiceChatStarted = (data) => {

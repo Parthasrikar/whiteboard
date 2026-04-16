@@ -33,13 +33,17 @@ interface AppSocket extends Socket {
   userName?: string;
 }
 
-// Health check endpoint
+// Health check endpoint - enhanced with voice metrics
 app.get('/health', (req: Request, res: Response) => {
   const stats = roomManager.getStats();
+  const voiceStats = roomManager.getVoiceStats();
+  
   res.json({
     status: 'healthy',
     uptime: process.uptime(),
-    ...stats
+    timestamp: new Date().toISOString(),
+    rooms: stats,
+    voice: voiceStats
   });
 });
 
@@ -260,105 +264,389 @@ io.on('connection', (baseSocket: Socket) => {
     }
   });
 
-  // Voice chat signaling events
-  socket.on('voice-offer', (data: { targetUserId: string, offer: any }) => {
-    if (!socket.currentRoom) return;
+  // ============================================
+  // OPTIMIZED VOICE CHAT SIGNALING WITH VALIDATION
+  // ============================================
+  
+  // Track ICE candidates per user for rate limiting (max 50/sec)
+  const iceCandidateTimestamps = new Map<string, number[]>();
+  
+  const checkIceRateLimit = (userId: string): boolean => {
+    const now = Date.now();
+    const timestamps = iceCandidateTimestamps.get(userId) || [];
     
-    const { targetUserId, offer } = data;
+    // Keep only timestamps from last second
+    const recentTimestamps = timestamps.filter(ts => now - ts < 1000);
     
-    socket.to(targetUserId).emit('voice-offer', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName,
-      offer
-    });
+    if (recentTimestamps.length >= 50) {
+      console.warn(`⚠️ ICE rate limit exceeded for ${userId}`);
+      return false;
+    }
     
-    console.log(`Voice offer from ${socket.id} to ${targetUserId}`);
+    recentTimestamps.push(now);
+    iceCandidateTimestamps.set(userId, recentTimestamps);
+    return true;
+  };
+
+  // Validate voice signaling data
+  const validateVoiceData = (data: any): { valid: boolean; error?: string } => {
+    if (!data || typeof data !== 'object') {
+      return { valid: false, error: 'Invalid data format' };
+    }
+
+    const { targetUserId } = data;
+    if (!targetUserId || typeof targetUserId !== 'string') {
+      return { valid: false, error: 'Invalid targetUserId' };
+    }
+
+    return { valid: true };
+  };
+
+  // Validate offer/answer/candidate structure
+  const validateSessionDescription = (desc: any): { valid: boolean; error?: string } => {
+    if (!desc || typeof desc !== 'object') {
+      return { valid: false, error: 'Invalid session description' };
+    }
+
+    if (!desc.type || !desc.sdp) {
+      return { valid: false, error: 'Missing type or sdp in session description' };
+    }
+
+    if (typeof desc.type !== 'string' || typeof desc.sdp !== 'string') {
+      return { valid: false, error: 'Invalid type or sdp format' };
+    }
+
+    return { valid: true };
+  };
+
+  const validateIceCandidate = (candidate: any): { valid: boolean; error?: string } => {
+    if (!candidate || typeof candidate !== 'object') {
+      return { valid: false, error: 'Invalid ICE candidate format' };
+    }
+
+    // ICE candidate should have foundation, component, priority
+    if (!candidate.candidate || typeof candidate.candidate !== 'string') {
+      return { valid: false, error: 'Invalid ICE candidate string' };
+    }
+
+    return { valid: true };
+  };
+
+  // Voice offer - optimized with validation
+  socket.on('voice-offer', (data: { targetUserId: string; offer: any }) => {
+    try {
+      if (!socket.currentRoom || !socket.id) {
+        socket.emit('voice-error', { error: 'Not in a room' });
+        return;
+      }
+
+      // Validate data format
+      const validation = validateVoiceData(data);
+      if (!validation.valid) {
+        socket.emit('voice-error', { error: validation.error });
+        console.warn(`❌ Invalid voice offer from ${socket.id}: ${validation.error}`);
+        return;
+      }
+
+      const { targetUserId, offer } = data;
+
+      // Prevent self-offer
+      if (targetUserId === socket.id) {
+        socket.emit('voice-error', { error: 'Cannot send offer to yourself' });
+        return;
+      }
+
+      // Validate room and users
+      const room = roomManager.getRoom(socket.currentRoom);
+      if (!room) {
+        socket.emit('voice-error', { error: 'Room not found' });
+        return;
+      }
+
+      if (!room.voiceChatEnabled) {
+        socket.emit('voice-error', { error: 'Voice chat disabled in this room' });
+        return;
+      }
+
+      // Check if target user is in the same room
+      const roomUsers = roomManager.getRoomUsers(socket.currentRoom);
+      const targetUserExists = roomUsers.some(u => u.id === targetUserId);
+
+      if (!targetUserExists) {
+        socket.emit('voice-error', { error: 'Target user not in room' });
+        console.warn(`⚠️ Voice offer to non-existent user ${targetUserId} from ${socket.id}`);
+        return;
+      }
+
+      // Validate offer structure
+      const offerValidation = validateSessionDescription(offer);
+      if (!offerValidation.valid) {
+        socket.emit('voice-error', { error: offerValidation.error });
+        return;
+      }
+
+      // Send offer to target user only
+      socket.to(targetUserId).emit('voice-offer', {
+        fromUserId: socket.id,
+        fromUserName: socket.userName,
+        offer
+      });
+
+      console.log(`📞 Voice offer: ${socket.id} → ${targetUserId}`);
+    } catch (error) {
+      console.error('❌ Error handling voice offer:', error);
+      socket.emit('voice-error', { error: 'Failed to process voice offer' });
+    }
   });
 
-  socket.on('voice-answer', (data: { targetUserId: string, answer: any }) => {
-    if (!socket.currentRoom) return;
-    
-    const { targetUserId, answer } = data;
-    
-    socket.to(targetUserId).emit('voice-answer', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName,
-      answer
-    });
-    
-    console.log(`Voice answer from ${socket.id} to ${targetUserId}`);
+  // Voice answer - optimized with validation
+  socket.on('voice-answer', (data: { targetUserId: string; answer: any }) => {
+    try {
+      if (!socket.currentRoom || !socket.id) {
+        socket.emit('voice-error', { error: 'Not in a room' });
+        return;
+      }
+
+      // Validate data format
+      const validation = validateVoiceData(data);
+      if (!validation.valid) {
+        socket.emit('voice-error', { error: validation.error });
+        return;
+      }
+
+      const { targetUserId, answer } = data;
+
+      // Prevent self-answer
+      if (targetUserId === socket.id) {
+        socket.emit('voice-error', { error: 'Cannot send answer to yourself' });
+        return;
+      }
+
+      // Validate room and users
+      const room = roomManager.getRoom(socket.currentRoom);
+      if (!room) {
+        socket.emit('voice-error', { error: 'Room not found' });
+        return;
+      }
+
+      if (!room.voiceChatEnabled) {
+        socket.emit('voice-error', { error: 'Voice chat disabled in this room' });
+        return;
+      }
+
+      // Check if target user is in the same room
+      const roomUsers = roomManager.getRoomUsers(socket.currentRoom);
+      const targetUserExists = roomUsers.some(u => u.id === targetUserId);
+
+      if (!targetUserExists) {
+        socket.emit('voice-error', { error: 'Target user not in room' });
+        return;
+      }
+
+      // Validate answer structure
+      const answerValidation = validateSessionDescription(answer);
+      if (!answerValidation.valid) {
+        socket.emit('voice-error', { error: answerValidation.error });
+        return;
+      }
+
+      // Send answer to target user only
+      socket.to(targetUserId).emit('voice-answer', {
+        fromUserId: socket.id,
+        fromUserName: socket.userName,
+        answer
+      });
+
+      console.log(`📞 Voice answer: ${socket.id} → ${targetUserId}`);
+    } catch (error) {
+      console.error('❌ Error handling voice answer:', error);
+      socket.emit('voice-error', { error: 'Failed to process voice answer' });
+    }
   });
 
-  socket.on('voice-ice-candidate', (data: { targetUserId: string, candidate: any }) => {
-    if (!socket.currentRoom) return;
-    
-    const { targetUserId, candidate } = data;
-    
-    socket.to(targetUserId).emit('voice-ice-candidate', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName,
-      candidate
-    });
+  // ICE candidate - optimized with rate limiting & validation
+  socket.on('voice-ice-candidate', (data: { targetUserId: string; candidate: any }) => {
+    try {
+      if (!socket.currentRoom || !socket.id) {
+        return; // Silently ignore - candidates are frequent
+      }
+
+      // Validate data format
+      const validation = validateVoiceData(data);
+      if (!validation.valid) {
+        return; // Silently ignore invalid candidates
+      }
+
+      // Check rate limit (50 candidates per second max)
+      if (!checkIceRateLimit(socket.id)) {
+        socket.emit('voice-error', { error: 'ICE candidate rate limit exceeded' });
+        return;
+      }
+
+      const { targetUserId, candidate } = data;
+
+      // Validate ICE candidate structure
+      const candidateValidation = validateIceCandidate(candidate);
+      if (!candidateValidation.valid) {
+        return; // Silently ignore invalid candidates
+      }
+
+      // Check if target user is in the same room
+      const room = roomManager.getRoom(socket.currentRoom);
+      if (!room) return;
+
+      const roomUsers = roomManager.getRoomUsers(socket.currentRoom);
+      const targetUserExists = roomUsers.some(u => u.id === targetUserId);
+
+      if (!targetUserExists) {
+        return; // Silently ignore - target user not in room
+      }
+
+      // Send candidate to target user only (no acknowledgment needed)
+      socket.to(targetUserId).emit('voice-ice-candidate', {
+        fromUserId: socket.id,
+        candidate
+      });
+    } catch (error) {
+      console.error('❌ Error handling ICE candidate:', error);
+    }
   });
 
+  // Mute/unmute toggle - optimized
   socket.on('voice-toggle', (data: { isMuted: boolean }) => {
-    if (!socket.currentRoom) return;
-    
-    const { isMuted } = data;
-    
-    const result = roomManager.updateUserVoiceStatus(socket.currentRoom, socket.id, { isMuted });
-    
-    if (result.success) {
+    try {
+      if (!socket.currentRoom || !socket.id) {
+        socket.emit('voice-error', { error: 'Not in a room' });
+        return;
+      }
+
+      if (typeof data?.isMuted !== 'boolean') {
+        socket.emit('voice-error', { error: 'Invalid mute data' });
+        return;
+      }
+
+      const { isMuted } = data;
+
+      // Update voice status in room manager
+      const result = roomManager.updateUserVoiceStatus(socket.currentRoom, socket.id, { isMuted });
+
+      if (!result.success) {
+        socket.emit('voice-error', { error: result.error });
+        return;
+      }
+
+      // Broadcast mute status to all users in room
       socket.to(socket.currentRoom).emit('user-voice-status', {
         userId: socket.id,
         userName: socket.userName,
         isMuted
       });
+
+      console.log(`🔇 ${socket.userName} (${socket.id}) ${isMuted ? 'muted' : 'unmuted'}`);
+    } catch (error) {
+      console.error('❌ Error handling voice toggle:', error);
+      socket.emit('voice-error', { error: 'Failed to update mute status' });
     }
   });
 
+  // Request voice chat - optimized with efficient broadcasting
   socket.on('request-voice-chat', () => {
-    if (!socket.currentRoom) return;
-    
-    const roomUsers = roomManager.getRoomUsers(socket.currentRoom);
-    const otherUserIds = roomUsers
-      .filter(user => user.id !== socket.id)
-      .map(user => user.id);
-    
-    if (otherUserIds.length === 0) {
-      socket.emit('voice-error', { error: 'No other users in room' });
-      return;
+    try {
+      if (!socket.currentRoom || !socket.id) {
+        socket.emit('voice-error', { error: 'Not in a room' });
+        return;
+      }
+
+      const room = roomManager.getRoom(socket.currentRoom);
+      if (!room) {
+        socket.emit('voice-error', { error: 'Room not found' });
+        return;
+      }
+
+      if (!room.voiceChatEnabled) {
+        socket.emit('voice-error', { error: 'Voice chat disabled in this room' });
+        return;
+      }
+
+      const roomUsers = roomManager.getRoomUsers(socket.currentRoom);
+
+      // Check if there are other users in the room
+      const otherUserIds = roomUsers
+        .filter(user => user.id !== socket.id)
+        .map(user => user.id);
+
+      if (otherUserIds.length === 0) {
+        socket.emit('voice-error', { error: 'No other users in room to connect with' });
+        return;
+      }
+
+      // Notify current user of other users to connect to
+      socket.emit('voice-chat-started', {
+        userIds: otherUserIds
+      });
+
+      // Notify other users that this user is starting voice chat
+      socket.to(socket.currentRoom).emit('voice-chat-started', {
+        userIds: [socket.id]
+      });
+
+      console.log(`📢 Voice chat requested by ${socket.userName} in room ${socket.currentRoom}`);
+    } catch (error) {
+      console.error('❌ Error handling voice chat request:', error);
+      socket.emit('voice-error', { error: 'Failed to start voice chat' });
     }
-    
-    socket.to(socket.currentRoom).emit('voice-chat-requested', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName
-    });
-    
-    socket.emit('voice-chat-started', {
-      userIds: otherUserIds
-    });
-    
-    socket.to(socket.currentRoom).emit('voice-chat-started', {
-      userIds: [socket.id]
-    });
   });
 
-  socket.on('voice-chat-response', (data: { accepted: boolean, targetUserId: string }) => {
-    if (!socket.currentRoom) return;
-    
-    const { accepted, targetUserId } = data;
-    
-    socket.to(targetUserId).emit('voice-chat-response', {
-      fromUserId: socket.id,
-      fromUserName: socket.userName,
-      accepted
-    });
+  // Voice chat response - optimized with validation
+  socket.on('voice-chat-response', (data: { accepted: boolean; targetUserId: string }) => {
+    try {
+      if (!socket.currentRoom || !socket.id) {
+        socket.emit('voice-error', { error: 'Not in a room' });
+        return;
+      }
+
+      const validation = validateVoiceData(data);
+      if (!validation.valid) {
+        socket.emit('voice-error', { error: validation.error });
+        return;
+      }
+
+      if (typeof data?.accepted !== 'boolean') {
+        socket.emit('voice-error', { error: 'Invalid acceptance data' });
+        return;
+      }
+
+      const { accepted, targetUserId } = data;
+
+      // Verify target user is in the same room
+      const roomUsers = roomManager.getRoomUsers(socket.currentRoom);
+      const targetUserExists = roomUsers.some(u => u.id === targetUserId);
+
+      if (!targetUserExists) {
+        socket.emit('voice-error', { error: 'Target user not in room' });
+        return;
+      }
+
+      // Send response to target user
+      socket.to(targetUserId).emit('voice-chat-response', {
+        fromUserId: socket.id,
+        fromUserName: socket.userName,
+        accepted
+      });
+
+      console.log(`📞 Voice chat response: ${socket.userName} ${accepted ? 'accepted' : 'rejected'} from ${targetUserId}`);
+    } catch (error) {
+      console.error('❌ Error handling voice chat response:', error);
+      socket.emit('voice-error', { error: 'Failed to send response' });
+    }
   });
 
-  // Handle disconnection
+  // Handle disconnection - cleanup voice tracking
   socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
+    console.log(`🔌 User disconnected: ${socket.id}`);
+    
+    // Clean up ICE candidate rate limiting
+    iceCandidateTimestamps.delete(socket.id);
     
     if (socket.currentRoom) {
       const result = roomManager.leaveRoom(socket.currentRoom, socket.id);

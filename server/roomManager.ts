@@ -212,6 +212,42 @@ class RoomManager {
     };
   }
 
+  // Get comprehensive voice statistics across all rooms
+  getVoiceStats() {
+    let totalActiveVoiceSessions = 0;
+    let totalUsersWithMicrophone = 0;
+    let totalMutedUsers = 0;
+
+    for (const room of this.rooms.values()) {
+      // Count users with active voice connections
+      const voiceActiveUsers = Array.from(room.users.values()).filter(
+        u => u.voiceStatus.isConnected
+      ).length;
+
+      if (voiceActiveUsers > 0) {
+        totalActiveVoiceSessions++;
+      }
+
+      // Count users status
+      for (const user of room.users.values()) {
+        if (user.voiceStatus.isConnected) {
+          totalUsersWithMicrophone++;
+          if (user.voiceStatus.isMuted) {
+            totalMutedUsers++;
+          }
+        }
+      }
+    }
+
+    return {
+      activeVoiceSessions: totalActiveVoiceSessions,
+      usersConnected: totalUsersWithMicrophone,
+      usersMuted: totalMutedUsers,
+      usersUnmuted: totalUsersWithMicrophone - totalMutedUsers,
+      timestamp: new Date().toISOString()
+    };
+  }
+
   updateUserVoiceStatus(roomCode: string, userId: string, voiceStatus: Partial<VoiceStatus>) {
     const room = this.rooms.get(roomCode);
     if (!room) {
