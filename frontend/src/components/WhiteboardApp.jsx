@@ -39,6 +39,7 @@ const WhiteboardApp = () => {
   const [elements, setElements] = useState([]);
   const [remoteDrawings, setRemoteDrawings] = useState({});
   const [remoteCursors, setRemoteCursors] = useState({});
+  const [pendingImageData, setPendingImageData] = useState(null);
   const lastCursorEmitRef = React.useRef(0);
 
   // Socket connection
@@ -409,11 +410,54 @@ const WhiteboardApp = () => {
   const downloadCanvas = () => {
     const canvas = document.querySelector('canvas');
     if (canvas) {
+      // Create a new canvas with white background
+      const newCanvas = document.createElement('canvas');
+      newCanvas.width = canvas.width;
+      newCanvas.height = canvas.height;
+      
+      const ctx = newCanvas.getContext('2d');
+      if (ctx) {
+        // Fill with white background
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, newCanvas.width, newCanvas.height);
+        
+        // Draw the original canvas on top
+        ctx.drawImage(canvas, 0, 0);
+      }
+      
       const link = document.createElement('a');
       link.download = `whiteboard-${currentRoom}-${Date.now()}.png`;
-      link.href = canvas.toDataURL();
+      link.href = newCanvas.toDataURL();
       link.click();
     }
+  };
+
+  const onUploadImage = (imageDataUrl) => {
+    // Set tool to image mode and store the image data
+    setPendingImageData(imageDataUrl);
+    setTool('image');
+  };
+
+  const onImagePlace = (imageElement) => {
+    // Add image to canvas when user clicks
+    setElements(prev => [...prev, imageElement]);
+    
+    // Emit image element to other users
+    socketEventHandler?.drawElement(imageElement);
+    
+    // Clear pending image data and reset tool
+    setPendingImageData(null);
+    setTool('pen');
+  };
+
+  const onImageUpdate = (imageElement) => {
+    // Update existing image element (for dragging/resizing)
+    setElements(prev => 
+      prev.map(el => el.id === imageElement.id ? imageElement : el)
+    );
+    
+    // Emit updated image to other users
+    socketEventHandler?.drawElement(imageElement);
   };
 
   // Global Connection Indicator Bulb Component
@@ -500,6 +544,7 @@ const WhiteboardApp = () => {
           undoLastAction={undoLastAction}
           clearCanvas={clearCanvas}
           downloadCanvas={downloadCanvas}
+          onUploadImage={onUploadImage}
           connectedUsers={connectedUsers}
           // Voice chat props passed to toolbar
           isVoiceChatActive={isVoiceChatActive}
@@ -531,8 +576,11 @@ const WhiteboardApp = () => {
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseLeave}
           onTextCommit={handleTextCommit}
+          onImagePlace={onImagePlace}
+          onImageUpdate={onImageUpdate}
           remoteCursors={remoteCursors}
           remoteDrawings={remoteDrawings}
+          pendingImageData={pendingImageData}
         />
       </div>
       

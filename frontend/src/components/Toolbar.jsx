@@ -19,7 +19,9 @@ import {
   MicOff,
   Phone,
   PhoneOff,
-  MessageSquare
+  MessageSquare,
+  Image as ImageIcon,
+  Move
 } from 'lucide-react';
 import VoiceChat from './VoiceChat';
 
@@ -34,6 +36,7 @@ const Toolbar = ({
   undoLastAction,
   clearCanvas,
   downloadCanvas,
+  onUploadImage,
   connectedUsers,
   // Voice chat props
   isVoiceChatActive,
@@ -62,6 +65,8 @@ const Toolbar = ({
   const mainTools = [
     { id: 'pen', icon: Pen, label: 'Pen' },
     { id: 'text', icon: Type, label: 'Text' },
+    { id: 'image', icon: ImageIcon, label: 'Image' },
+    { id: 'drag', icon: Move, label: 'Drag' },
     { id: 'pan', icon: Hand, label: 'Pan' },
     { id: 'eraser', icon: Eraser, label: 'Eraser' }
   ];
@@ -304,7 +309,14 @@ const Toolbar = ({
               return (
                 <button
                   key={t.id}
-                  onClick={() => { setTool(t.id); setShowShapesMenu(false); }}
+                  onClick={() => {
+                    setTool(t.id);
+                    setShowShapesMenu(false);
+                    // If image tool, trigger file upload
+                    if (t.id === 'image') {
+                      document.getElementById('imageUploadInput')?.click();
+                    }
+                  }}
                   className={`flex items-center justify-center w-10 h-10 rounded-lg transition-all duration-200 ${
                     isActive 
                       ? 'bg-indigo-50 text-indigo-600 shadow-sm ring-1 ring-indigo-500/20 scale-105' 
@@ -394,6 +406,24 @@ const Toolbar = ({
             >
               <Download className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" />
             </button>
+            <input
+              id="imageUploadInput"
+              type="file"
+              accept="image/*"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  const reader = new FileReader();
+                  reader.onload = (event) => {
+                    if (event.target?.result) {
+                      onUploadImage?.(event.target.result);
+                    }
+                  };
+                  reader.readAsDataURL(file);
+                }
+              }}
+              className="hidden"
+            />
           </div>
 
           <div className="w-px h-8 bg-gray-200/80 mx-1" />

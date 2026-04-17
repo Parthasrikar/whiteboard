@@ -16,8 +16,11 @@ const Canvas = ({
   onMouseUp, 
   onMouseLeave,
   onTextCommit,
+  onImagePlace,
+  onImageUpdate,
   remoteCursors = {},
-  remoteDrawings = {}
+  remoteDrawings = {},
+  pendingImageData = null
 }) => {
   // Text tool overlay state
   const [activeText, setActiveText] = useState(null); // { screenX, screenY, worldX, worldY, value }
@@ -27,6 +30,16 @@ const Canvas = ({
   const roughCanvasRef = useRef(null);
   const textareaRef = useRef(null);
   const lastPanPoint = useRef({ x: 0, y: 0 });
+  const imageCache = useRef({}); // Cache for preloaded images
+  
+  // Image interaction state
+  const [selectedImageId, setSelectedImageId] = useState(null);
+  const [draggedImageId, setDraggedImageId] = useState(null);
+  const [resizeHandle, setResizeHandle] = useState(null); // 'tl', 'tr', 'br', 'bl', 'edge'
+  const [isDraggingImage, setIsDraggingImage] = useState(false); // Track if currently dragging image
+  const dragStartPos = useRef({ x: 0, y: 0 });
+  const imageStartPos = useRef({ x: 0, y: 0 }); // Track image start position for dragging
+  const imageStartSize = useRef({ width: 0, height: 0 });
 
   // Camera state for infinite canvas
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
@@ -109,6 +122,51 @@ const Canvas = ({
     setCamera({ x: 0, y: 0, zoom: 1 });
   };
 
+  // Preload images from elements
+  useEffect(() => {
+    elements.forEach((element) => {
+      if (element.type === 'image' && element.src && !imageCache.current[element.src]) {
+        const img = new Image();
+        img.onload = () => {
+          imageCache.current[element.src] = img;
+        };
+        img.src = element.src;
+      }
+    });
+  }, [elements]);
+
+  // Helper: Find which image is at a world coordinate
+  const getImageAtWorldPos = (worldX, worldY) => {
+    // Check from last to first (top-most images first)
+    for (let i = elements.length - 1; i >= 0; i--) {
+      const el = elements[i];
+      if (el.type === 'image') {
+        if (
+          worldX >= el.x &&
+          worldX <= el.x + el.width &&
+          worldY >= el.y &&
+          worldY <= el.y + el.height
+        ) {
+          return el;
+        }
+      }
+    }
+    return null;
+  };
+
+  // Helper: Detect if clicking on resize handle (with 8px tolerance)
+  const getResizeHandle = (image, worldX, worldY) => {
+    const tolerance = 8;
+    const onEdge = (val, edge, tolerance) => Math.abs(val - edge) < tolerance;
+
+    if (onEdge(worldX, image.x, tolerance) && onEdge(worldY, image.y, tolerance)) return 'tl';
+    if (onEdge(worldX, image.x + image.width, tolerance) && onEdge(worldY, image.y, tolerance)) return 'tr';
+    if (onEdge(worldX, image.x + image.width, tolerance) && onEdge(worldY, image.y + image.height, tolerance)) return 'br';
+    if (onEdge(worldX, image.x, tolerance) && onEdge(worldY, image.y + image.height, tolerance)) return 'bl';
+    
+    return null;
+  };
+
   // Commit any active text input — called directly, NOT inside a state updater
   const commitText = (value) => {
     if (textCommittedRef.current) return;
@@ -131,6 +189,8 @@ const Canvas = ({
       textareaRef.current.setSelectionRange(val.length, val.length);
     }
   }, [activeText]);
+
+
 
   // Wrap the original mouse event handlers to fix coordinates and intercept panning
   const handleMouseDown = (e) => {
@@ -179,6 +239,58 @@ const Canvas = ({
       setActiveText(textState);
       return;
     }
+
+    // Image tool: place image at click location
+    if (tool === 'image' && pendingImageData) {
+      const pos = getMousePos(canvas, e.clientX, e.clientY);
+      
+      const newImage = {
+        id: Date.now(),
+        type: 'image',
+        src: pendingImageData,
+        x: pos.x,
+        y: pos.y,
+        width: 150,
+        height: 150
+      };
+      
+      onImagePlace?.(newImage);
+      setSelectedImageId(newImage.id);
+      return;
+    }
+
+    // Image interaction: only when drag tool is active
+    if (tool === 'drag') {
+      const pos = getMousePos(canvas, e.clientX, e.clientY);
+      const clickedImage = getImageAtWorldPos(pos.x, pos.y);
+      
+      if (clickedImage) {
+        const handle = getResizeHandle(clickedImage, pos.x, pos.y);
+        
+        if (handle) {
+          // Start resizing
+          setResizeHandle(handle);
+          setDraggedImageId(clickedImage.id);
+          dragStartPos.current = { x: pos.x, y: pos.y };
+          imageStartSize.current = { width: clickedImage.width, height: clickedImage.height };
+          setSelectedImageId(clickedImage.id);
+          return;
+        } else {
+          // Start dragging
+          setIsDraggingImage(true);
+          setDraggedImageId(clickedImage.id);
+          dragStartPos.current = { x: pos.x, y: pos.y };
+          imageStartPos.current = { x: clickedImage.x, y: clickedImage.y };
+          setSelectedImageId(clickedImage.id);
+          
+          
+          return;
+        }
+      }
+
+      // Deselect image if clicking elsewhere
+      setSelectedImageId(null);
+    }
     
     const pos = getMousePos(canvas, e.clientX, e.clientY);
     const syntheticEvent = {
@@ -204,7 +316,67 @@ const Canvas = ({
       lastPanPoint.current = { x: e.clientX, y: e.clientY };
       return;
     }
+    // Handle image dragging and resizing
+    if (draggedImageId) {
+      const draggedImage = elements.find(el => el.id === draggedImageId);
+      if (!draggedImage || draggedImage.type !== 'image') return;
 
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const pos = getMousePos(canvas, e.clientX, e.clientY);
+      const dx = pos.x - dragStartPos.current.x;
+      const dy = pos.y - dragStartPos.current.y;
+
+      if (resizeHandle) {
+        // Resizing
+        const minSize = 30;
+        let newX = draggedImage.x;
+        let newY = draggedImage.y;
+        let newWidth = imageStartSize.current.width;
+        let newHeight = imageStartSize.current.height;
+
+        if (resizeHandle === 'tl') {
+          newX = draggedImage.x + dx;
+          newY = draggedImage.y + dy;
+          newWidth = imageStartSize.current.width - dx;
+          newHeight = imageStartSize.current.height - dy;
+        } else if (resizeHandle === 'tr') {
+          newY = draggedImage.y + dy;
+          newWidth = imageStartSize.current.width + dx;
+          newHeight = imageStartSize.current.height - dy;
+        } else if (resizeHandle === 'br') {
+          newWidth = imageStartSize.current.width + dx;
+          newHeight = imageStartSize.current.height + dy;
+        } else if (resizeHandle === 'bl') {
+          newX = draggedImage.x + dx;
+          newWidth = imageStartSize.current.width - dx;
+          newHeight = imageStartSize.current.height + dy;
+        }
+
+        // Apply minimum size
+        if (newWidth < minSize) {
+          newWidth = minSize;
+          if (resizeHandle === 'tl' || resizeHandle === 'bl') {
+            newX = draggedImage.x + imageStartSize.current.width - minSize;
+          }
+        }
+        if (newHeight < minSize) {
+          newHeight = minSize;
+          if (resizeHandle === 'tl' || resizeHandle === 'tr') {
+            newY = draggedImage.y + imageStartSize.current.height - minSize;
+          }
+        }
+
+        const updatedElement = { ...draggedImage, x: newX, y: newY, width: newWidth, height: newHeight };
+        onImageUpdate?.(updatedElement);
+      } else if (isDraggingImage) {
+        // Dragging image - canvas stays fixed, only move image
+        const updatedElement = { ...draggedImage, x: imageStartPos.current.x + dx, y: imageStartPos.current.y + dy };
+        onImageUpdate?.(updatedElement);
+      }
+      return;
+    }
     const canvas = canvasRef.current;
     if (!canvas) return;
     
@@ -225,6 +397,12 @@ const Canvas = ({
       setIsPanning(false);
       return;
     }
+    if (draggedImageId) {
+      setDraggedImageId(null);
+      setResizeHandle(null);
+      setIsDraggingImage(false);
+      return;
+    }
     onMouseUp(e);
   };
 
@@ -232,6 +410,9 @@ const Canvas = ({
     if (isPanning) {
       setIsPanning(false);
       return;
+    }
+    if (isDraggingImage) {
+      setIsDraggingImage(false);
     }
     onMouseLeave(e);
   };
@@ -331,8 +512,47 @@ const Canvas = ({
       });
     }
 
+    // Draw selection box and resize handles for selected image (before restore so it moves with image in world space)
+    if (selectedImageId) {
+      const selectedImage = elements.find(el => el.id === selectedImageId && el.type === 'image');
+      if (selectedImage) {
+        const pad = 4;
+        const handleSize = 6;
+
+        // Draw selection box
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 2 / camera.zoom;
+        ctx.setLineDash([4 / camera.zoom, 4 / camera.zoom]);
+        ctx.strokeRect(
+          selectedImage.x - pad,
+          selectedImage.y - pad,
+          selectedImage.width + pad * 2,
+          selectedImage.height + pad * 2
+        );
+        ctx.setLineDash([]);
+
+        // Draw resize handles
+        ctx.fillStyle = '#3b82f6';
+        const handlePos = [
+          { x: selectedImage.x - pad, y: selectedImage.y - pad, name: 'tl' }, // top-left
+          { x: selectedImage.x + selectedImage.width + pad, y: selectedImage.y - pad, name: 'tr' }, // top-right
+          { x: selectedImage.x + selectedImage.width + pad, y: selectedImage.y + selectedImage.height + pad, name: 'br' }, // bottom-right
+          { x: selectedImage.x - pad, y: selectedImage.y + selectedImage.height + pad, name: 'bl' } // bottom-left
+        ];
+
+        handlePos.forEach(pos => {
+          ctx.fillRect(
+            pos.x - handleSize / 2 / camera.zoom,
+            pos.y - handleSize / 2 / camera.zoom,
+            handleSize / camera.zoom,
+            handleSize / camera.zoom
+          );
+        });
+      }
+    }
+
     ctx.restore();
-  }, [elements, currentPath, isDrawing, tool, color, brushSize, startPoint, camera, remoteDrawings]); // Added camera to dependencies
+  }, [elements, currentPath, isDrawing, tool, color, brushSize, startPoint, camera, remoteDrawings, selectedImageId]);
 
   // Dot grid background pattern that moves with the camera
   const dotGridStyle = {
@@ -525,6 +745,30 @@ const Canvas = ({
           lines.forEach((line, i) => {
             ctx.fillText(line, element.x, element.y + i * lineH);
           });
+        }
+        break;
+      case "image":
+        if (element.src) {
+          // Use cached image if available, otherwise load it
+          if (!imageCache.current[element.src]) {
+            const img = new Image();
+            img.onload = () => {
+              imageCache.current[element.src] = img;
+            };
+            img.src = element.src;
+          }
+          
+          // Draw if image is cached and loaded
+          const cachedImg = imageCache.current[element.src];
+          if (cachedImg && cachedImg.complete) {
+            ctx.drawImage(
+              cachedImg,
+              element.x,
+              element.y,
+              element.width,
+              element.height
+            );
+          }
         }
         break;
     }
