@@ -135,6 +135,11 @@ export class SocketEventHandler {
     this.socket?.emit(socketEvents.DRAW_END, { element });
   }
 
+  drawElement(element) {
+    // Emit image or any element directly for real-time sync
+    this.socket?.emit(socketEvents.DRAW_END, { element });
+  }
+
   emitCursorMove(data) {
     this.socket?.emit(socketEvents.CURSOR_MOVE, data);
   }

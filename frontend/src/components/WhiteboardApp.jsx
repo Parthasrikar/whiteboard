@@ -40,6 +40,7 @@ const WhiteboardApp = () => {
   const [remoteDrawings, setRemoteDrawings] = useState({});
   const [remoteCursors, setRemoteCursors] = useState({});
   const [pendingImageData, setPendingImageData] = useState(null);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
   const lastCursorEmitRef = React.useRef(0);
 
   // Socket connection
@@ -434,8 +435,10 @@ const WhiteboardApp = () => {
 
   const onUploadImage = (imageDataUrl) => {
     // Set tool to image mode and store the image data
+    setIsUploadingImage(true);
     setPendingImageData(imageDataUrl);
     setTool('image');
+    // Loading state will be cleared when image is placed
   };
 
   const onImagePlace = (imageElement) => {
@@ -445,8 +448,9 @@ const WhiteboardApp = () => {
     // Emit image element to other users
     socketEventHandler?.drawElement(imageElement);
     
-    // Clear pending image data and reset tool
+    // Clear pending image data, reset tool, and clear loading state
     setPendingImageData(null);
+    setIsUploadingImage(false);
     setTool('pen');
   };
 
@@ -545,6 +549,7 @@ const WhiteboardApp = () => {
           clearCanvas={clearCanvas}
           downloadCanvas={downloadCanvas}
           onUploadImage={onUploadImage}
+          isUploadingImage={isUploadingImage}
           connectedUsers={connectedUsers}
           // Voice chat props passed to toolbar
           isVoiceChatActive={isVoiceChatActive}

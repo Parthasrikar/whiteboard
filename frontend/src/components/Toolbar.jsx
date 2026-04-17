@@ -37,6 +37,7 @@ const Toolbar = ({
   clearCanvas,
   downloadCanvas,
   onUploadImage,
+  isUploadingImage,
   connectedUsers,
   // Voice chat props
   isVoiceChatActive,
@@ -406,10 +407,19 @@ const Toolbar = ({
             >
               <Download className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" />
             </button>
+            
+            {/* Image Upload Loader */}
+            {isUploadingImage && (
+              <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-indigo-50 text-indigo-500">
+                <div className="w-4 h-4 border-2 border-indigo-200 border-t-indigo-500 rounded-full animate-spin" />
+              </div>
+            )}
+            
             <input
               id="imageUploadInput"
               type="file"
               accept="image/*"
+              disabled={isUploadingImage}
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) {

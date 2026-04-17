@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useReducer } from 'react';
 import rough from 'roughjs';
 import { ZoomIn, ZoomOut } from 'lucide-react';
 
@@ -31,6 +31,10 @@ const Canvas = ({
   const textareaRef = useRef(null);
   const lastPanPoint = useRef({ x: 0, y: 0 });
   const imageCache = useRef({}); // Cache for preloaded images
+  // Bumped whenever an image finishes decoding, so the draw useEffect re-runs
+  // and the newly-available image actually paints (fixes "image only appears
+  // after the other user clicks / moves the mouse" bug for remote images).
+  const [imageLoadTick, bumpImageLoadTick] = useReducer((x) => x + 1, 0);
   
   // Image interaction state
   const [selectedImageId, setSelectedImageId] = useState(null);
@@ -125,10 +129,26 @@ const Canvas = ({
   // Preload images from elements
   useEffect(() => {
     elements.forEach((element) => {
-      if (element.type === 'image' && element.src && !imageCache.current[element.src]) {
+      if (
+        element.type === 'image' &&
+        element.src &&
+        !(element.src in imageCache.current)
+      ) {
+        // Mark as "loading" (null) immediately so drawElement doesn't kick off
+        // a second Image() for the same src on the next render.
+        imageCache.current[element.src] = null;
+
         const img = new Image();
         img.onload = () => {
           imageCache.current[element.src] = img;
+          // Force the draw useEffect to re-run now that the image is decoded.
+          // Without this, the canvas stays blank until some unrelated event
+          // (cursor move, click, etc.) triggers a redraw.
+          bumpImageLoadTick();
+        };
+        img.onerror = () => {
+          // Let a future attempt retry instead of permanently caching failure
+          delete imageCache.current[element.src];
         };
         img.src = element.src;
       }
@@ -552,7 +572,7 @@ const Canvas = ({
     }
 
     ctx.restore();
-  }, [elements, currentPath, isDrawing, tool, color, brushSize, startPoint, camera, remoteDrawings, selectedImageId]);
+  }, [elements, currentPath, isDrawing, tool, color, brushSize, startPoint, camera, remoteDrawings, selectedImageId, imageLoadTick]);
 
   // Dot grid background pattern that moves with the camera
   const dotGridStyle = {
@@ -749,18 +769,12 @@ const Canvas = ({
         break;
       case "image":
         if (element.src) {
-          // Use cached image if available, otherwise load it
-          if (!imageCache.current[element.src]) {
-            const img = new Image();
-            img.onload = () => {
-              imageCache.current[element.src] = img;
-            };
-            img.src = element.src;
-          }
-          
-          // Draw if image is cached and loaded
+          // Loading is handled exclusively by the preload useEffect, which
+          // calls bumpImageLoadTick() on decode to force this draw pass to
+          // re-run. We only consult the cache here — never start a new load,
+          // otherwise a re-render during decode would race and double-load.
           const cachedImg = imageCache.current[element.src];
-          if (cachedImg && cachedImg.complete) {
+          if (cachedImg && cachedImg.complete && cachedImg.naturalWidth > 0) {
             ctx.drawImage(
               cachedImg,
               element.x,
