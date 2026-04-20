@@ -4,7 +4,7 @@ import { io } from 'socket.io-client';
 const DEFAULT_SERVER_URL = import.meta.env.VITE_BACKEND_URL || 
   (import.meta.env.DEV
     ? 'http://localhost:5000'
-    : 'https://whiteboard-backend-vwnp.onrender.com');
+    : '/');
 
 export const useSocket = (serverUrl = DEFAULT_SERVER_URL) => {
   const socketRef = useRef(null);
@@ -14,12 +14,19 @@ export const useSocket = (serverUrl = DEFAULT_SERVER_URL) => {
   useEffect(() => {
     console.log('🔌 Attempting to connect to:', serverUrl);
     
-    // Create socket connection
-    socketRef.current = io(serverUrl, {
+    // Create socket connection - use "/" to go through Nginx proxy
+    const connectUrl = serverUrl === '/' ? '/' : serverUrl;
+    
+    socketRef.current = io(connectUrl, {
       transports: ['websocket', 'polling'],
-      timeout: 5000,
+      timeout: 10000,
       forceNew: true,
-      autoConnect: true
+      autoConnect: true,
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: 10,
+      path: '/socket.io/'
     });
 
     const socket = socketRef.current;

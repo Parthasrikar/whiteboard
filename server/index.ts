@@ -8,28 +8,18 @@ const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
+  transports: ['websocket', 'polling'],
   cors: {
-    origin: (origin, callback) => {
-      // Allow all origins in development, restrict in production
-      if (process.env.NODE_ENV === 'production') {
-        const allowedOrigins = [
-          "https://13.201.85.134",
-          "http://13.201.85.134",
-          "http://13.201.85.134:5000",
-          "https://13.201.85.134:5000",
-          "https://whiteboard-frontend-2e8f.onrender.com",
-          "https://your-production-domain.com"
-        ];
-        if (!origin || allowedOrigins.includes(origin)) {
-          callback(null, true);
-        } else {
-          callback(new Error('Not allowed by CORS'));
-        }
-      } else {
-        // Development: allow all
-        callback(null, true);
-      }
-    },
+    origin: [
+      "http://13.201.85.134",
+      "http://13.201.85.134:5000",
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "http://127.0.0.1:5173",
+      "http://127.0.0.1:3000",
+      "https://whiteboard-frontend-2e8f.onrender.com",
+      "https://your-production-domain.com"
+    ],
     methods: ["GET", "POST"],
     credentials: true
   }
