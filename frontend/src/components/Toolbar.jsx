@@ -13,6 +13,8 @@ import {
   ChevronUp,
   RotateCcw, 
   Download,
+  Upload,
+  Save,
   Users,
   Hand,
   Mic,
@@ -36,6 +38,8 @@ const Toolbar = ({
   undoLastAction,
   clearCanvas,
   downloadCanvas,
+  saveCanvasState,
+  loadCanvasState,
   onUploadImage,
   isUploadingImage,
   connectedUsers,
@@ -407,6 +411,34 @@ const Toolbar = ({
             >
               <Download className="w-4 h-4 group-hover:translate-y-0.5 transition-transform" />
             </button>
+            <button
+              onClick={saveCanvasState}
+              disabled={elements.length === 0}
+              className="flex items-center justify-center w-10 h-10 rounded-lg bg-transparent text-green-500 hover:bg-green-50 transition-colors group disabled:opacity-30 disabled:cursor-not-allowed"
+              title="Save Canvas State"
+            >
+              <Save className="w-4 h-4 group-hover:scale-110 transition-transform" />
+            </button>
+            <button
+              onClick={() => document.getElementById('stateFileInput')?.click()}
+              className="flex items-center justify-center w-10 h-10 rounded-lg bg-transparent text-amber-500 hover:bg-amber-50 transition-colors group"
+              title="Load Canvas State"
+            >
+              <Upload className="w-4 h-4 group-hover:-translate-y-0.5 transition-transform" />
+            </button>
+            <input
+              id="stateFileInput"
+              type="file"
+              accept=".json"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  loadCanvasState(file);
+                  e.target.value = '';
+                }
+              }}
+            />
             
             {/* Image Upload Loader */}
             {isUploadingImage && (

@@ -433,6 +433,50 @@ const WhiteboardApp = () => {
     }
   };
 
+  // Save canvas state to a JSON file that can be loaded later
+  const saveCanvasState = () => {
+    const state = {
+      version: '1.0',
+      timestamp: Date.now(),
+      elements: elements
+    };
+    
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    
+    const link = document.createElement('a');
+    link.download = `whiteboard-state-${currentRoom}-${Date.now()}.json`;
+    link.href = url;
+    link.click();
+    
+    URL.revokeObjectURL(url);
+    showToast('Canvas state saved!', 'success');
+  };
+
+  // Load canvas state from a JSON file
+  const loadCanvasState = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const state = JSON.parse(e.target?.result);
+        
+        if (state.elements && Array.isArray(state.elements)) {
+          setElements(state.elements);
+          showToast(`Canvas state loaded! ${state.elements.length} elements restored.`, 'success');
+        } else {
+          showToast('Invalid state file format', 'error');
+        }
+      } catch (err) {
+        showToast('Failed to load state file', 'error');
+        console.error('Load state error:', err);
+      }
+    };
+    reader.onerror = () => {
+      showToast('Failed to read file', 'error');
+    };
+    reader.readAsText(file);
+  };
+
   const onUploadImage = (imageDataUrl) => {
     // Set tool to image mode and store the image data
     setIsUploadingImage(true);
@@ -548,6 +592,8 @@ const WhiteboardApp = () => {
           undoLastAction={undoLastAction}
           clearCanvas={clearCanvas}
           downloadCanvas={downloadCanvas}
+          saveCanvasState={saveCanvasState}
+          loadCanvasState={loadCanvasState}
           onUploadImage={onUploadImage}
           isUploadingImage={isUploadingImage}
           connectedUsers={connectedUsers}
