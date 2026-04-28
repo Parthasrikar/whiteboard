@@ -8,18 +8,9 @@ const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  transports: ['websocket', 'polling'],
+  transports: ['polling', 'websocket'],
   cors: {
-    origin: [
-      "http://13.201.85.134",
-      "http://13.201.85.134:5000",
-      "http://localhost:5173",
-      "http://localhost:3000",
-      "http://127.0.0.1:5173",
-      "http://127.0.0.1:3000",
-      "https://whiteboard-frontend-2e8f.onrender.com",
-      "https://your-production-domain.com"
-    ],
+    origin: "*",
     methods: ["GET", "POST"],
     credentials: true
   }
