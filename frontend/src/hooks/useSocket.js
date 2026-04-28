@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io } from 'socket.io-client';
 
-const DEFAULT_SERVER_URL = import.meta.env.VITE_BACKEND_URL || 
-  (import.meta.env.DEV
-    ? 'http://localhost:5000'
-    : '/');
+// Determine server URL based on environment
+const getServerUrl = () => {
+  // In development, always use localhost
+  if (import.meta.env.DEV) {
+    return 'http://localhost:5000';
+  }
+  // In production, use relative path for proxy
+  return '/';
+};
+
+const DEFAULT_SERVER_URL = getServerUrl();
 
 export const useSocket = (serverUrl = DEFAULT_SERVER_URL) => {
   const socketRef = useRef(null);
@@ -14,10 +21,8 @@ export const useSocket = (serverUrl = DEFAULT_SERVER_URL) => {
   useEffect(() => {
     console.log('🔌 Attempting to connect to:', serverUrl);
     
-    // Create socket connection - use "/" to go through Nginx proxy
-    const connectUrl = serverUrl === '/' ? '/' : serverUrl;
-    
-    socketRef.current = io(connectUrl, {
+    // Create socket connection
+    socketRef.current = io(serverUrl, {
       transports: ['websocket', 'polling'],
       timeout: 10000,
       forceNew: true,
@@ -25,8 +30,7 @@ export const useSocket = (serverUrl = DEFAULT_SERVER_URL) => {
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
-      reconnectionAttempts: 10,
-      path: '/socket.io/'
+      reconnectionAttempts: 5
     });
 
     const socket = socketRef.current;
