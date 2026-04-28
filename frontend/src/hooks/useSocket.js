@@ -7,8 +7,8 @@ const getServerUrl = () => {
   if (import.meta.env.DEV) {
     return 'http://localhost:5000';
   }
-  // In production, use relative path for proxy
-  return '/';
+  // In production, use the same origin (handles both HTTP and HTTPS)
+  return '';
 };
 
 const DEFAULT_SERVER_URL = getServerUrl();
@@ -19,18 +19,18 @@ export const useSocket = (serverUrl = DEFAULT_SERVER_URL) => {
   const [connectionError, setConnectionError] = useState(null);
 
   useEffect(() => {
-    console.log('🔌 Attempting to connect to:', serverUrl);
+    console.log('🔌 Attempting to connect to:', serverUrl || 'same origin');
     
-    // Create socket connection
-    socketRef.current = io(serverUrl, {
-      transports: ['websocket', 'polling'],
-      timeout: 10000,
+    // Create socket connection - empty string means same origin
+    socketRef.current = io(serverUrl || undefined, {
+      transports: ['polling', 'websocket'],
+      timeout: 15000,
       forceNew: true,
       autoConnect: true,
       reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      reconnectionAttempts: 5
+      reconnectionDelay: 2000,
+      reconnectionDelayMax: 10000,
+      reconnectionAttempts: 10
     });
 
     const socket = socketRef.current;
