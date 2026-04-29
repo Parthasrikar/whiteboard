@@ -3,7 +3,11 @@ import { io } from 'socket.io-client';
 
 // Determine server URL based on environment
 const getServerUrl = () => {
-  // In development, always use localhost
+  // Use VITE_BACKEND_URL if set (covers both dev and prod overrides)
+  if (import.meta.env.VITE_BACKEND_URL) {
+    return import.meta.env.VITE_BACKEND_URL;
+  }
+  // In development, fall back to localhost
   if (import.meta.env.DEV) {
     return 'http://localhost:5000';
   }
