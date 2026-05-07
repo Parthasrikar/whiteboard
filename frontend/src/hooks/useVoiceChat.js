@@ -19,6 +19,8 @@ export const useVoiceChat = (socket, roomCode, userName) => {
   const myUserIdRef = useRef(null);
   const pendingIceCandidatesRef = useRef(new Map()); // NEW: Store pending candidates
   const reconnectAttemptsRef = useRef(new Map()); // NEW: Track reconnection attempts
+  const isVoiceChatActiveRef = useRef(false); // Ref to avoid stale closures in callbacks
+  const playRemoteAudioRef = useRef(null); // Ref to avoid stale closure in createPeerConnection
 
   // ICE servers configuration
   const iceServers = {
@@ -42,6 +44,11 @@ export const useVoiceChat = (socket, roomCode, userName) => {
       console.log("🆔 Set current user ID:", socket.id);
     }
   }, [socket?.id]);
+
+  // Keep isVoiceChatActiveRef in sync so callbacks never capture stale state
+  useEffect(() => {
+    isVoiceChatActiveRef.current = isVoiceChatActive;
+  }, [isVoiceChatActive]);
 
   // Deterministic role selection - prevents offer collisions
   const shouldInitiateOffer = useCallback((remoteUserId) => {
@@ -166,7 +173,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         });
       }
 
-      // Handle remote stream
+      // Handle remote stream — use ref to avoid stale closure
       peerConnection.ontrack = (event) => {
         console.log(
           `📥 Received remote track from ${userId}:`,
@@ -174,7 +181,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
         );
         const [remoteStream] = event.streams;
         if (remoteStream) {
-          playRemoteAudio(userId, remoteStream);
+          playRemoteAudioRef.current?.(userId, remoteStream);
           updatePeerStatus(userId, true);
         }
       };
@@ -215,9 +222,9 @@ export const useVoiceChat = (socket, roomCode, userName) => {
             console.log(`⚠️ Voice connection disconnected with ${userId}`);
             updatePeerStatus(userId, false);
             const attempts = reconnectAttemptsRef.current.get(userId) || 0;
-            if (isVoiceChatActive && attempts < 3) {
+            if (isVoiceChatActiveRef.current && attempts < 3) {
               setTimeout(() => {
-                if (isVoiceChatActive && peerConnectionsRef.current.has(userId)) {
+                if (isVoiceChatActiveRef.current && peerConnectionsRef.current.has(userId)) {
                   console.log(`🔄 Attempting to reconnect to ${userId} (attempt ${attempts + 1})`);
                   restartConnectionWithUser(userId);
                 }
@@ -229,7 +236,7 @@ export const useVoiceChat = (socket, roomCode, userName) => {
             console.log(`❌ Voice connection failed with ${userId}`);
             updatePeerStatus(userId, false);
             const failAttempts = reconnectAttemptsRef.current.get(userId) || 0;
-            if (isVoiceChatActive && failAttempts < 3) {
+            if (isVoiceChatActiveRef.current && failAttempts < 3) {
               setTimeout(() => restartConnectionWithUser(userId), 1000);
             } else {
               closePeerConnection(userId);
@@ -262,34 +269,10 @@ export const useVoiceChat = (socket, roomCode, userName) => {
       peerConnectionsRef.current.set(userId, peerConnection);
       return peerConnection;
     },
-    [socket, isVoiceChatActive, updatePeerStatus]
+    // isVoiceChatActive intentionally omitted — use isVoiceChatActiveRef.current in callbacks
+    // playRemoteAudio intentionally omitted — use playRemoteAudioRef.current in ontrack
+    [socket, updatePeerStatus]
   );
-
-  // Restart connection with a specific user - IMPROVED
-  const restartConnectionWithUser = useCallback(async (userId) => {
-    console.log(`🔄 Restarting connection with ${userId}`);
-    
-    // Track reconnection attempts
-    const attempts = reconnectAttemptsRef.current.get(userId) || 0;
-    reconnectAttemptsRef.current.set(userId, attempts + 1);
-    
-    // Close existing connection
-    closePeerConnection(userId);
-    
-    // Wait a bit before restarting
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // Only restart if we're still in voice chat
-    if (isVoiceChatActive) {
-      if (shouldInitiateOffer(userId)) {
-        initiateConnectionWithUser(userId);
-      } else {
-        // Create peer connection and wait for offer
-        createPeerConnection(userId);
-        updatePeerStatus(userId, { connected: false, waiting: true });
-      }
-    }
-  }, [isVoiceChatActive, shouldInitiateOffer]);
 
   // Initiate connection with a single user
   const initiateConnectionWithUser = useCallback(async (userId) => {
@@ -320,7 +303,34 @@ export const useVoiceChat = (socket, roomCode, userName) => {
     }
   }, [socket, createPeerConnection]);
 
+  // Restart connection with a specific user - IMPROVED
+  const restartConnectionWithUser = useCallback(async (userId) => {
+    console.log(`🔄 Restarting connection with ${userId}`);
+
+    // Track reconnection attempts
+    const attempts = reconnectAttemptsRef.current.get(userId) || 0;
+    reconnectAttemptsRef.current.set(userId, attempts + 1);
+
+    // Close existing connection
+    closePeerConnection(userId);
+
+    // Wait a bit before restarting
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Only restart if we're still in voice chat
+    if (isVoiceChatActiveRef.current) {
+      if (shouldInitiateOffer(userId)) {
+        initiateConnectionWithUser(userId);
+      } else {
+        // Create peer connection and wait for offer
+        createPeerConnection(userId);
+        updatePeerStatus(userId, { connected: false, waiting: true });
+      }
+    }
+  }, [shouldInitiateOffer, initiateConnectionWithUser, createPeerConnection, updatePeerStatus]);
+
   // Play remote audio with better error handling
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const playRemoteAudio = useCallback(
     (userId, stream) => {
       console.log(`🔊 Setting up audio playback for user: ${userId}`);
@@ -388,6 +398,9 @@ export const useVoiceChat = (socket, roomCode, userName) => {
     },
     [connectedPeers, updatePeerStatus]
   );
+
+  // Always keep the ref pointing at the latest version so createPeerConnection.ontrack is never stale
+  playRemoteAudioRef.current = playRemoteAudio;
 
   // Close peer connection with cleanup - SIMPLIFIED
   const closePeerConnection = useCallback(
@@ -740,13 +753,29 @@ export const useVoiceChat = (socket, roomCode, userName) => {
       }
     };
 
-    const handleVoiceChatStarted = (data) => {
+    const handleVoiceChatStarted = async (data) => {
       const { userIds } = data;
       console.log("🚀 Voice chat started with users:", userIds);
 
       setVoiceError(null);
+      // Mark as active for ALL participants — not just the person who initiated
+      setIsVoiceChatActive(true);
+      isVoiceChatActiveRef.current = true;
 
       if (userIds && userIds.length > 0) {
+        // Ensure we have an audio stream before attempting any peer connections.
+        // Receiving users skip startVoiceChat() so their stream may not exist yet.
+        if (!localStreamRef.current) {
+          console.log("🎤 No local stream yet — initializing audio for incoming voice-chat-started");
+          const stream = await initializeAudioStream();
+          if (!stream) {
+            console.error("❌ Failed to initialize audio stream for incoming call");
+            setIsVoiceChatActive(false);
+            isVoiceChatActiveRef.current = false;
+            return;
+          }
+        }
+
         setTimeout(() => {
           initiateVoiceChatWithUsers(userIds);
         }, 100);
